@@ -5,11 +5,10 @@ etf_symbols <- c(
   "STW.AX",   # SPDR S&P/ASX 200 - Australian equities
   "GOLD.AX",  # Perth Mint Physical Gold
   "SLF.AX",   # SPDR S&P/ASX 200 Listed Property
-  "IOO.AX"    # iShares Global 100 ETF AUD
+  "IOO.AX",   # iShares Global 100 ETF AUD
+  "VAS.AX",   # Vanguard Australian Shares
+  "VGS.AX"    # Vanguard MSCI Index International Shares
 )
-
-etf_end_date <- Sys.Date() - 2  # avoid potential NAs on recent days
-
 
 # 02 BACKTESTING PARAMETERS -----------------------------------------------
 
