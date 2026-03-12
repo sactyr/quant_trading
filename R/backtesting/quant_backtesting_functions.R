@@ -12,13 +12,18 @@
 #'
 #' @returns xts-style data frame
 
-get_market_data <- function(symbol, to = Sys.Date() - 2) {
+get_market_data <- function(
+    symbol
+    ,to = Sys.Date() - 2
+) {
+  
   getSymbols(
     Symbols = symbol
     ,src = "yahoo"
     ,to = to
     ,auto.assign = FALSE
   )
+  
 }
 
 
@@ -105,6 +110,7 @@ backtest_strategy <- function(
     action_taken <- NA_character_
     trade_price  <- NA_real_
     trade_fee    <- 0
+    trade_units  <- NA_real_
     exit_reason  <- NA_character_
     
     # --- LOGIC START ---
@@ -115,12 +121,13 @@ backtest_strategy <- function(
       if (price_i <= entry * (1 - stop_loss)) {
         
         # Calculate Exit
-        proceeds  <- units * price_i
-        trade_fee <- max(ibkr_min_fee, proceeds * ibkr_fee_rate)
-        cash      <- cash + proceeds - trade_fee
-        units     <- 0
-        pos       <- 0L
-        entry     <- NA_real_
+        proceeds    <- units * price_i
+        trade_fee   <- max(ibkr_min_fee, proceeds * ibkr_fee_rate)
+        cash        <- cash + proceeds - trade_fee
+        trade_units <- units
+        units       <- 0
+        pos         <- 0L
+        entry       <- NA_real_
         
         action_taken <- "SELL"
         exit_reason  <- "STOP_LOSS"
@@ -131,12 +138,13 @@ backtest_strategy <- function(
     # B. Check Sell Signal (Only if we are still Long)
     if (pos == 1L && signal_i == -1L) {
       
-      proceeds  <- units * price_i
-      trade_fee <- max(ibkr_min_fee, proceeds * ibkr_fee_rate)
-      cash      <- cash + proceeds - trade_fee
-      units     <- 0
-      pos       <- 0L
-      entry     <- NA_real_
+      proceeds    <- units * price_i
+      trade_fee   <- max(ibkr_min_fee, proceeds * ibkr_fee_rate)
+      cash        <- cash + proceeds - trade_fee
+      trade_units <- units
+      units       <- 0
+      pos         <- 0L
+      entry       <- NA_real_
       
       action_taken <- "SELL"
       exit_reason  <- "SIGNAL"
@@ -161,9 +169,10 @@ backtest_strategy <- function(
         fee_if_pct   <- cost_if_pct * ibkr_fee_rate
         fee_if_flat  <- ibkr_min_fee
         
-        trade_fee <- max(fee_if_flat, fee_if_pct)
-        cost      <- cash - trade_fee
-        units     <- cost / price_i
+        trade_fee   <- max(fee_if_flat, fee_if_pct)
+        cost        <- cash - trade_fee
+        units       <- cost / price_i
+        trade_units <- units
         
         cash  <- cash - cost - trade_fee
         pos   <- 1L
@@ -190,7 +199,7 @@ backtest_strategy <- function(
         ,action      = action_taken
         ,exit_reason = exit_reason
         ,price       = trade_price
-        ,units       = units
+        ,units       = trade_units
         ,fee         = trade_fee
         ,equity_after = current_equity
       )
@@ -212,7 +221,7 @@ backtest_strategy <- function(
       ,action      = "SELL"
       ,exit_reason = "FORCE_CLOSE"
       ,price       = prices[n]
-      ,units       = 0
+      ,units       = units
       ,fee         = final_fee
       ,equity_after = cash
     )
@@ -650,16 +659,22 @@ strat_bb <- function(prices_xts, n = 20, sd = 2) {
     date = index(prices_xts)
   ) %>% 
     mutate(
-      price    = as.numeric(Ad(prices_xts))
-      ,bb_up   = as.numeric(bb$up)
-      ,bb_down = as.numeric(bb$dn)
-      ,bb_mavg = as.numeric(bb$mavg)
-      ,trade_signal = case_when(   
-        price < bb_down ~ 1L  # Buy (price below lower band)
-        ,price > bb_up  ~ -1L # Sell (price above upper band)  
-        ,.default = 0L        # Hold
+      price      = as.numeric(Ad(prices_xts))
+      ,bb_up     = as.numeric(bb$up)
+      ,bb_down   = as.numeric(bb$dn)
+      ,bb_mavg   = as.numeric(bb$mavg)
+      ,prev_price   = dplyr::lag(price)
+      ,prev_bb_down = dplyr::lag(bb_down)
+      ,prev_bb_up   = dplyr::lag(bb_up)
+      ,trade_signal = case_when(
+        # Cross below lower band: price was at/above lower band yesterday, now below it
+        !is.na(prev_price) & (prev_price >= prev_bb_down) & (price < bb_down) ~  1L  # Buy
+        # Cross above upper band: price was at/below upper band yesterday, now above it
+        ,!is.na(prev_price) & (prev_price <= prev_bb_up)  & (price > bb_up)  ~ -1L  # Sell
+        ,.default = 0L # Hold
       )
-    )
+    ) %>%
+    select(-prev_price, -prev_bb_down, -prev_bb_up)
   
 }
 

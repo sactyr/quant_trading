@@ -56,16 +56,17 @@ etf_data <- map(
 # public holidays, stock halt trading etc)
 etf_data <- map(etf_data, na.approx)
 
+
 # 04 BACKTESTING SINGLE WINDOW --------------------------------------------
 
 strategy_fns <- list(
-  buy_hold                  = strat_buy_hold
-  ,sma                      = strat_sma
-  ,sma_cross                = strat_sma_cross
-  ,rsi                      = strat_rsi
-  ,bb                       = strat_bb
-  ,macd                     = strat_macd
-  ,macd_vol                 = strat_macdv
+  buy_hold                   = strat_buy_hold
+  ,sma                       = strat_sma
+  ,sma_cross                 = strat_sma_cross
+  ,rsi                       = strat_rsi
+  ,bb                        = strat_bb
+  ,macd                      = strat_macd
+  ,macd_vol                  = strat_macdv
   ,macd_vol_dynamic_strength = strat_macdv_dynamic_strength
 )
 
@@ -81,7 +82,7 @@ single_window_results <- map(etf_symbols, function(symbol) {
   
   # Create combinations of strategy name + stop-loss options
   param_grid <- expand_grid(
-    name      = names(strategies)
+    name       = names(strategies)
     ,stop_loss = stop_losses
   )
   
@@ -89,11 +90,11 @@ single_window_results <- map(etf_symbols, function(symbol) {
   results_list <- future_pmap(param_grid, function(name, stop_loss) {
     
     res <- backtest_strategy(
-      signal_tbl     = strategies[[name]]
-      ,ibkr_min_fee  = ibkr_min_fee
-      ,ibkr_fee_rate = ibkr_fee_rate
-      ,initial_equity = init_equity
-      ,stop_loss      = stop_loss
+      signal_tbl       = strategies[[name]]
+      ,ibkr_min_fee    = ibkr_min_fee
+      ,ibkr_fee_rate   = ibkr_fee_rate
+      ,initial_equity  = init_equity
+      ,stop_loss       = stop_loss
       ,min_trade_value = 10
       ,force_close_final = TRUE      
     )
@@ -149,8 +150,8 @@ all_etf_monte_carlo <- map(etf_symbols, function(symbol) {
   ### Generate sample windows ---------------------------------------------
   
   sample_windows <- sample_xts_window(
-    prices_xts        = prices_xts
-    ,sample_size      = n_samples
+    prices_xts         = prices_xts
+    ,sample_size       = n_samples
     ,min_window_length = min_window_length
   )
   
@@ -241,7 +242,7 @@ all_etf_monte_carlo <- map(etf_symbols, function(symbol) {
       quant_dir
       ,"outputs"
       ,"backtesting"
-      ,paste0(Sys.Date(), "_", symbol, "_SL", sl * 100, "_monte_carlo_summary.rds")
+      ,paste0(symbol, "_SL", sl * 100, "_monte_carlo_summary.rds")
     )
     
     if (file.exists(chunk_file)) {
@@ -278,12 +279,12 @@ all_etf_monte_carlo <- map(etf_symbols, function(symbol) {
       ,function(window_id, strategy_name, stop_loss, backtest_id) {
         
         res <- backtest_strategy(
-          signal_tbl       = monte_carlo_signals[[window_id]][[strategy_name]]
-          ,ibkr_min_fee    = ibkr_min_fee
-          ,ibkr_fee_rate   = ibkr_fee_rate
-          ,initial_equity  = init_equity
-          ,stop_loss       = stop_loss
-          ,min_trade_value = 10
+          signal_tbl         = monte_carlo_signals[[window_id]][[strategy_name]]
+          ,ibkr_min_fee      = ibkr_min_fee
+          ,ibkr_fee_rate     = ibkr_fee_rate
+          ,initial_equity    = init_equity
+          ,stop_loss         = stop_loss
+          ,min_trade_value   = 10
           ,force_close_final = TRUE
         )
         
@@ -354,32 +355,43 @@ walk(etf_symbols, function(symbol) {
       quant_dir
       ,"outputs"
       ,"backtesting"
-      ,paste0(Sys.Date(), "_", symbol, "_monte_carlo_summary.rds")
+      ,paste0(symbol, "_monte_carlo_summary.rds")
     )
   )
 })
 
+
 ## Load saved results -----------------------------------------------------
 
+backtesting_files <- list.files(
+  path       = file.path(quant_dir, "outputs", "backtesting")
+  ,pattern   = "_monte_carlo_summary\\.rds$"
+  ,full.names = TRUE
+)
+
+# Combined files have no _SL in the name
+backtesting_combined_files <- backtesting_files[!grepl("_SL[0-9]", backtesting_files)]
+
+# etf_symbols drives the names - load in etf_symbols order
 all_etf_monte_carlo <- map(etf_symbols, function(symbol) {
   
-  files <- list.files(
-    path       = file.path(quant_dir, "outputs", "backtesting")
-    ,pattern   = paste0("_", symbol, "_monte_carlo_summary\\.rds$")
-    ,full.names = TRUE
-  )
+  target_file <- backtesting_combined_files[grepl(symbol, backtesting_combined_files)]
   
-  # Combined files have no _SL in the name
-  combined_file <- files[!grepl("_SL[0-9]", files)]
+  if (length(target_file) == 0) {
+    warning("No combined file found for ", symbol, " - skipping")
+    return(NULL)
+  }
   
-  readRDS(file = combined_file)
+  readRDS(target_file)
   
 }) %>% 
-  set_names(etf_symbols)
+  set_names(etf_symbols) %>% 
+  compact() # Drop any NULLs (symbols with no combined file)
+
 
 ## Aggregate results ------------------------------------------------------
 
-agg_summaries <- map(etf_symbols, function(symbol) {
+agg_summaries <- map(names(all_etf_monte_carlo), function(symbol) {
   
   monte_carlo_summary <- all_etf_monte_carlo[[symbol]]
   
@@ -403,8 +415,7 @@ agg_summaries <- map(etf_symbols, function(symbol) {
       # Context
       ,n_samples = n()
       ,.groups = "drop"
-    ) %>%
-    arrange(desc(geo_mean_CAGR))
+    )
   
   ranked_summary <- agg_summary %>%
     mutate(
@@ -424,19 +435,23 @@ agg_summaries <- map(etf_symbols, function(symbol) {
   ranked_summary
   
 }) %>% 
-  set_names(etf_symbols)
+  set_names(names(all_etf_monte_carlo))
 
+
+agg_summaries %>% 
+  map(slice_head, n = 1) %>% 
+  bind_rows(.id = "etf") 
 
 ## Visualisation ----------------------------------------------------------
 
 ### The Efficient Frontier (one plot per ETF) -----------------------------
 
-walk(etf_symbols, function(symbol) {
+walk(names(agg_summaries), function(symbol) {
   
   ranked_summary <- agg_summaries[[symbol]]
   
   p <- ggplot(
-    data    = ranked_summary
+    data     = ranked_summary
     ,mapping = aes(x = cvar_drawdown, y = geo_mean_CAGR)
   ) +
     
@@ -449,22 +464,22 @@ walk(etf_symbols, function(symbol) {
     
     # Highlight Top 5 by CAPS Score
     geom_point(
-      data    = head(ranked_summary, 5)
+      data     = head(ranked_summary, 5)
       ,mapping = aes(color = strategy_type, size = CAPS)
-      ,alpha  = 0.5
+      ,alpha   = 0.5
     ) +
     geom_text(
-      data    = head(ranked_summary, 5)
+      data     = head(ranked_summary, 5)
       ,mapping = aes(label = paste(strategy_type, stop_loss, sep = "_"))
-      ,vjust  = -1.5
-      ,size   = 3
+      ,vjust   = -1.5
+      ,size    = 3
     ) +
     
     labs(
-      title    = paste("The Efficient Frontier:", symbol)
+      title     = paste("The Efficient Frontier:", symbol)
       ,subtitle = "Top 5 CAPS highlighted"
-      ,x       = "Tail Risk (CVaR Drawdown)"
-      ,y       = "Geometric Mean CAGR"
+      ,x        = "Tail Risk (CVaR Drawdown)"
+      ,y        = "Geometric Mean CAGR"
     ) +
     theme_minimal()
   

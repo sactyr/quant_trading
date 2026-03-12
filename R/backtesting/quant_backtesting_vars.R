@@ -1,14 +1,28 @@
 # 01 INSTRUMENTS ----------------------------------------------------------
 
 # ETF symbols (Yahoo Finance ASX tickers)
+# Final universe — see decisions log for full instrument selection rationale
 etf_symbols <- c(
-  "STW.AX",   # SPDR S&P/ASX 200 - Australian equities
-  "GOLD.AX",  # Perth Mint Physical Gold
-  "SLF.AX",   # SPDR S&P/ASX 200 Listed Property
-  "IOO.AX",   # iShares Global 100 ETF AUD
-  "VAS.AX",   # Vanguard Australian Shares
-  "VGS.AX"    # Vanguard MSCI Index International Shares
+  "VGS.AX",   # Vanguard MSCI World ex-Australia — global developed markets
+  "VAS.AX",   # Vanguard Australian Shares — ASX 300
+  "GOLD.AX"   # Perth Mint Physical Gold — uncorrelated diversifier
 )
+
+# Capital split per ETF (CAPS-weighted — see Decision 9 in decisions log)
+# VGS: 0.507 / 0.904 = 56%, VAS: 0.275 / 0.904 = 30%, GOLD: 0.122 / 0.904 = 14%
+etf_splits <- c(
+  VGS.AX  = 0.56,
+  VAS.AX  = 0.30,
+  GOLD.AX = 0.14
+)
+
+# Best strategy per ETF (by CAPS from Monte Carlo — see decisions log)
+etf_strategies <- list(
+  VGS.AX  = list(strategy = "buy_hold",                stop_loss = 0.00),
+  VAS.AX  = list(strategy = "macd_vol_dynamic_10_0.6", stop_loss = 0.10),
+  GOLD.AX = list(strategy = "rsi",                     stop_loss = 0.10)
+)
+
 
 # 02 BACKTESTING PARAMETERS -----------------------------------------------
 
