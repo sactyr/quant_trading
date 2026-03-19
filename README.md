@@ -27,7 +27,6 @@ quant_trading/
 │   └── live_trading/
 │       ├── quant_vars.R                   # Live trading configuration
 │       ├── quant_functions.R              # Signal generation and order sizing
-│       ├── quant_get_price_history.R      # Fetch latest prices
 │       ├── quant_trader.R                 # Main daily entry point
 │       └── ibkr_api.R                     # IBKR Client Portal REST wrapper
 ├── outputs/
