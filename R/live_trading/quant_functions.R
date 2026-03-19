@@ -206,10 +206,10 @@ calculate_buy_units <- function(cash_available, price) {
 #' @return xts object with OHLCV columns in quantmod format
 price_df_to_xts <- function(price_df, symbol) {
   xts_obj <- xts::xts(
-    x        = price_df[, c("open", "high", "low", "close", "volume")],
+    x        = price_df[, c("open", "high", "low", "close", "volume", "close")],
     order.by = as.Date(price_df$date)
   )
-  colnames(xts_obj) <- paste0(symbol, c(".Open", ".High", ".Low", ".Close", ".Volume"))
+  colnames(xts_obj) <- paste0(symbol, c(".Open", ".High", ".Low", ".Close", ".Volume", ".Adjusted"))
   xts_obj
 }
 
