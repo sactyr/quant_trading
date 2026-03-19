@@ -101,7 +101,7 @@ log_info("Step 4: Loading state...")
 ibkr_cash <- tryCatch({
   summary <- ibkr_get_summary(ibkr_account_id)
   cash <- as.numeric(summary$totalcashvalue$amount)
-  log_info("IBKR total cash balance: ${cash}")
+  log_info("IBKR total cash balance: ${sprintf('%.2f', cash)}")
   cash
 }, error = function(e) {
   log_warn("Could not fetch IBKR cash balance: {e$message}. Will use total_capital fallback if needed.")
@@ -113,7 +113,7 @@ state <- load_state(ibkr_cash = ibkr_cash)
 log_info("Current state:")
 for (i in seq_len(nrow(state))) {
   log_info(
-    "  {state$symbol[i]}: {state$units_held[i]} units held, ${state$cash_available[i]} cash available"
+    "  {state$symbol[i]}: {state$units_held[i]} units held, ${sprintf('%.2f', state$cash_available[i])} cash available"
   )
 }
 
@@ -160,7 +160,7 @@ for (symbol in etf_symbols) {
     next
   }
 
-  log_info("Units held: {units_held} | Cash available: ${cash_avail} | Current price: ${current_price}")
+  log_info("Units held: {units_held} | Cash available: ${sprintf('%.2f', cash_avail)} | Current price: ${current_price}")
 
   # Stop loss check (only if holding a position) ----
   if (units_held > 0 && stop_loss_pct > 0) {
