@@ -53,24 +53,43 @@ get_log_layout <- function() {
 #' Initialise or load the trading state file
 #'
 #' The state file tracks units held and cash available per ETF bucket across
-#' daily runs. On first run (no state file exists), initialises from
-#' quant_vars.R bucket sizes with zero units held.
+#' daily runs. On first run (no state file exists), initialises buckets by
+#' splitting total available cash from IBKR according to etf_splits. Falls
+#' back to total_capital from quant_vars.R if IBKR cash is unavailable.
 #'
 #' State structure (one row per ETF):
 #'   symbol  | units_held | cash_available | last_updated
-#'   VGS.AX  | 0          | 2800.00        | 2026-03-15
-#'   VAS.AX  | 0          | 1500.00        | 2026-03-15
-#'   GOLD.AX | 0          | 700.00         | 2026-03-15
+#'   VGS.AX  | 0          | 560000.00      | 2026-03-15  (paper: $1M * 56%)
+#'   VAS.AX  | 0          | 300000.00      | 2026-03-15  (paper: $1M * 30%)
+#'   GOLD.AX | 0          | 140000.00      | 2026-03-15  (paper: $1M * 14%)
 #'
+#' @param ibkr_cash Total cash available from IBKR account summary (AUD).
+#'   If NULL or NA, falls back to total_capital from quant_vars.R.
 #' @return Data frame representing current state
-load_state <- function() {
+load_state <- function(ibkr_cash = NULL) {
   if (!file.exists(state_file)) {
-    message("No state file found — initialising from quant_vars.R bucket sizes.")
+
+    # Determine starting capital
+    if (!is.null(ibkr_cash) && !is.na(ibkr_cash) && ibkr_cash > 0) {
+      starting_capital <- ibkr_cash
+      message(sprintf(
+        "No state file found — initialising from IBKR cash balance: $%.2f",
+        starting_capital
+      ))
+    } else {
+      starting_capital <- total_capital
+      message(sprintf(
+        "No state file found — IBKR cash unavailable, falling back to total_capital: $%.2f",
+        starting_capital
+      ))
+    }
+
+    buckets <- round(starting_capital * etf_splits, 2)
 
     state <- data.frame(
       symbol         = etf_symbols,
       units_held     = 0L,
-      cash_available = as.numeric(etf_buckets),
+      cash_available = as.numeric(buckets),
       last_updated   = as.character(Sys.Date()),
       stringsAsFactors = FALSE
     )

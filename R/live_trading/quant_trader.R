@@ -48,7 +48,7 @@ log_info("=============================================================")
 log_info("quant_trader.R started — {Sys.time()}")
 log_info("Account: {ibkr_account_id}")
 log_info("ETF universe: {paste(etf_symbols, collapse = ', ')}")
-log_info("Total capital: ${total_capital}")
+log_info("Total capital (fallback): ${total_capital}")
 log_info("=============================================================")
 
 # Step 1: Confirm IBKR session -------------------------------------------------
@@ -97,7 +97,18 @@ for (symbol in etf_symbols) {
 
 log_info("Step 4: Loading state...")
 
-state <- load_state()
+# Fetch total cash from IBKR to initialise buckets on first run
+ibkr_cash <- tryCatch({
+  summary <- ibkr_get_summary(ibkr_account_id)
+  cash <- as.numeric(summary$totalcashvalue$amount)
+  log_info("IBKR total cash balance: ${cash}")
+  cash
+}, error = function(e) {
+  log_warn("Could not fetch IBKR cash balance: {e$message}. Will use total_capital fallback if needed.")
+  NULL
+})
+
+state <- load_state(ibkr_cash = ibkr_cash)
 
 log_info("Current state:")
 for (i in seq_len(nrow(state))) {
