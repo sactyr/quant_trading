@@ -238,7 +238,8 @@ ibkr_get_conids <- function(symbols) {
     }
 
     asx_matches <- Filter(function(x) {
-      any(grepl("ASX", unlist(x$sections), ignore.case = TRUE))
+      grepl("ASX", x$description, ignore.case = TRUE) ||
+      grepl("ASX", x$companyHeader, ignore.case = TRUE)
     }, resp)
 
     if (length(asx_matches) == 0) {
