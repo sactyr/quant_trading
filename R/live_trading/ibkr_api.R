@@ -243,8 +243,8 @@ ibkr_get_conids <- function(symbols) {
 
     if (length(asx_matches) == 0) {
       stop(sprintf(
-        "No ASX-listed contract found for symbol: %s. ",
-        "Check the symbol or inspect the secdef/search endpoint manually.", sym
+        "No ASX-listed contract found for symbol: %s. Check the symbol or inspect the secdef/search endpoint manually.",
+        sym
       ))
     }
 

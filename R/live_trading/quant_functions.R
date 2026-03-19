@@ -11,12 +11,17 @@
 #   - quantmod, TTR, dplyr, readr, lubridate, logger
 # =============================================================================
 
-library(quantmod)
-library(TTR)
-library(dplyr)
-library(readr)
-library(lubridate)
-library(logger)
+suppressPackageStartupMessages({
+  library(quantmod)
+  library(TTR)
+  library(dplyr)
+  library(readr)
+  library(lubridate)
+  library(logger)
+})
+
+# Set timezone to AEST/AEDT
+Sys.setenv(TZ = "Australia/Sydney")
 
 # Reuse strategy signal logic from backtesting — single source of truth
 source(file.path(project_root, "R", "backtesting", "quant_backtesting_functions.R"))

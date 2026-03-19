@@ -18,8 +18,13 @@
 #   - IBKR_ACCOUNT_ID must be set in .Renviron
 # =============================================================================
 
-library(logger)
-library(here)
+suppressPackageStartupMessages({
+  library(logger)
+  library(here)
+})
+
+# Set timezone to AEST/AEDT
+Sys.setenv(TZ = "Australia/Sydney")
 
 # Sources ----------------------------------------------------------------------
 
@@ -146,7 +151,7 @@ for (symbol in etf_symbols) {
 
   log_info("Units held: {units_held} | Cash available: ${cash_avail} | Current price: ${current_price}")
 
-  ## Stop loss check (only if holding a position) ----
+  # Stop loss check (only if holding a position) ----
   if (units_held > 0 && stop_loss_pct > 0) {
 
     avg_cost <- NA
