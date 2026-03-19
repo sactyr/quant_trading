@@ -196,16 +196,34 @@ calculate_buy_units <- function(cash_available, price) {
 
 # Signal generation ------------------------------------------------------------
 
+#' Convert price history data frame to xts object for strategy functions
+#'
+#' Converts the data frame returned by ibkr_get_price_history() into an xts
+#' object with column names compatible with quantmod/TTR functions (HLC, Ad).
+#'
+#' @param price_df Data frame with columns: date, open, high, low, close, volume
+#' @param symbol ETF symbol including .AX suffix (used for column naming)
+#' @return xts object with OHLCV columns in quantmod format
+price_df_to_xts <- function(price_df, symbol) {
+  xts_obj <- xts::xts(
+    x        = price_df[, c("open", "high", "low", "close", "volume")],
+    order.by = as.Date(price_df$date)
+  )
+  colnames(xts_obj) <- paste0(symbol, c(".Open", ".High", ".Low", ".Close", ".Volume"))
+  xts_obj
+}
+
 #' Generate today's trading signal for a single ETF
 #'
-#' Applies the ETF's assigned strategy to a vector of daily closing prices
-#' and returns the latest signal.
+#' Applies the ETF's assigned strategy to price history and returns the latest
+#' signal.
 #'
 #' @param symbol ETF symbol including .AX suffix (e.g. "VGS.AX")
-#' @param close_prices Numeric vector of daily closing prices in chronological
-#'   order (as returned by price_history[[symbol]]$close in quant_trader.R)
+#' @param price_df Data frame of daily OHLCV bars as returned by
+#'   ibkr_get_price_history() (stored in price_history[[symbol]] in
+#'   quant_trader.R)
 #' @return Character string: "buy", "sell", or "hold"
-generate_signal <- function(symbol, close_prices) {
+generate_signal <- function(symbol, price_df) {
   strategy_config <- etf_strategies[[symbol]]
 
   if (is.null(strategy_config)) {
@@ -217,12 +235,16 @@ generate_signal <- function(symbol, close_prices) {
   # buy_hold never generates a sell signal
   if (strategy == "buy_hold") return("buy")
 
+  if (nrow(price_df) < 50) {
+    stop(sprintf("Insufficient price history for %s (%d bars).", symbol, nrow(price_df)))
+  }
+
   signal <- switch(strategy,
 
     "rsi" = {
-      rsi_values <- TTR::RSI(close_prices, n = rsi_n_period)
+      rsi_values <- TTR::RSI(price_df$close, n = rsi_n_period)
       latest_rsi <- tail(rsi_values, 1)
-      if (is.na(latest_rsi))       "hold"
+      if (is.na(latest_rsi))           "hold"
       else if (latest_rsi < rsi_lower) "buy"
       else if (latest_rsi > rsi_upper) "sell"
       else                             "hold"
@@ -233,13 +255,19 @@ generate_signal <- function(symbol, close_prices) {
         stop(sprintf("Unrecognised strategy '%s' for symbol %s", strategy, symbol))
       }
 
-      signals <- generate_macd_vol_dynamic_signals(
-        prices          = close_prices,
-        rolling_window  = macd_vol_rolling_window,
-        quantile_thresh = macd_vol_quantile
+      prices_xts <- price_df_to_xts(price_df, symbol)
+
+      result <- strat_macdv_dynamic_strength(
+        prices_xts        = prices_xts,
+        roll_window       = macd_vol_rolling_window,
+        strength_quantile = macd_vol_quantile
       )
 
-      as.character(tail(signals, 1))
+      latest_signal <- tail(result$trade_signal, 1)
+
+      if (is.na(latest_signal) || latest_signal == 0L) "hold"
+      else if (latest_signal == 1L)                    "buy"
+      else                                             "sell"
     }
   )
 

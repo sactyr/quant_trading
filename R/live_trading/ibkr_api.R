@@ -383,7 +383,10 @@ ibkr_place_order <- function(account_id, conid, side, quantity) {
 #' @return Final response after all messages are confirmed
 #' @noRd
 ibkr_confirm_order_messages <- function(resp) {
-  while (!is.null(resp[[1]]$id) && !is.null(resp[[1]]$message)) {
+  while (is.list(resp) && length(resp) > 0 &&
+         is.list(resp[[1]]) &&
+         !is.null(resp[[1]]$id) &&
+         !is.null(resp[[1]]$message)) {
     message_id <- resp[[1]]$id
     message(sprintf("Confirming order message: %s", resp[[1]]$message[[1]]))
     resp <- ibkr_post(

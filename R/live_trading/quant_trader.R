@@ -183,7 +183,7 @@ for (symbol in etf_symbols) {
 
   # Signal generation ----
   signal <- tryCatch({
-    sig <- generate_signal(symbol, price_history[[symbol]]$close)
+    sig <- generate_signal(symbol, price_history[[symbol]])
     log_info("Signal for {symbol}: {sig}")
     sig
   }, error = function(e) {
