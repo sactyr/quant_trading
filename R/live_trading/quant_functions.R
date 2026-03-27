@@ -54,19 +54,24 @@ get_log_layout <- function() {
 #'
 #' The state file tracks units held and cash available per ETF bucket across
 #' daily runs. On first run (no state file exists), initialises buckets by
-#' splitting total available cash from IBKR according to etf_splits. Falls
-#' back to total_capital from quant_vars.R if IBKR cash is unavailable.
+#' splitting total available cash from IBKR according to etf_splits, and
+#' cross-checks IBKR positions to correctly set units_held for any existing
+#' positions. Falls back to total_capital from quant_vars.R if IBKR cash
+#' is unavailable.
 #'
 #' State structure (one row per ETF):
 #'   symbol  | units_held | cash_available | last_updated
-#'   VGS.AX  | 0          | 560000.00      | 2026-03-15  (paper: $1M * 56%)
-#'   VAS.AX  | 0          | 300000.00      | 2026-03-15  (paper: $1M * 30%)
-#'   GOLD.AX | 0          | 140000.00      | 2026-03-15  (paper: $1M * 14%)
+#'   VGS.AX  | 3947       | 65.16          | 2026-03-27
+#'   VAS.AX  | 0          | 300000.00      | 2026-03-27
+#'   GOLD.AX | 0          | 140000.00      | 2026-03-27
 #'
 #' @param ibkr_cash Total cash available from IBKR account summary (AUD).
 #'   If NULL or NA, falls back to total_capital from quant_vars.R.
+#' @param ibkr_positions Data frame of current IBKR positions as returned by
+#'   ibkr_get_positions(). Used on first run to correctly initialise units_held
+#'   and adjust cash buckets for existing positions. Pass NULL to skip.
 #' @return Data frame representing current state
-load_state <- function(ibkr_cash = NULL) {
+load_state <- function(ibkr_cash = NULL, ibkr_positions = NULL) {
   if (!file.exists(state_file)) {
 
     # Determine starting capital
@@ -84,8 +89,20 @@ load_state <- function(ibkr_cash = NULL) {
       ))
     }
 
-    buckets <- round(starting_capital * etf_splits, 2)
+    # Total portfolio value = cash + position values
+    # Estimate total value to derive correct bucket splits
+    total_position_value <- 0
+    if (!is.null(ibkr_positions) && nrow(ibkr_positions) > 0) {
+      for (i in seq_len(nrow(ibkr_positions))) {
+        pos_val <- ibkr_positions$position[i] * ibkr_positions$avg_cost[i]
+        total_position_value <- total_position_value + pos_val
+      }
+    }
+    total_value <- starting_capital + total_position_value
 
+    buckets <- round(total_value * etf_splits, 2)
+
+    # Initialise state with zero units
     state <- data.frame(
       symbol         = etf_symbols,
       units_held     = 0L,
@@ -93,6 +110,31 @@ load_state <- function(ibkr_cash = NULL) {
       last_updated   = as.character(Sys.Date()),
       stringsAsFactors = FALSE
     )
+
+    # Cross-check IBKR positions — set units_held and adjust cash for held positions
+    if (!is.null(ibkr_positions) && nrow(ibkr_positions) > 0) {
+      for (i in seq_len(nrow(ibkr_positions))) {
+        ibkr_sym <- ibkr_positions$symbol[i]
+        # Match IBKR symbol (e.g. "VGS") to etf_symbols (e.g. "VGS.AX")
+        matched  <- etf_symbols[grepl(paste0("^", ibkr_sym, "\\."), etf_symbols)]
+        if (length(matched) == 0) next
+
+        units    <- as.integer(ibkr_positions$position[i])
+        avg_cost <- ibkr_positions$avg_cost[i]
+        cost     <- units * avg_cost
+        fee      <- max(ibkr_min_fee, cost * ibkr_fee_rate)
+
+        idx <- which(state$symbol == matched)
+        state$units_held[idx]     <- units
+        # Deduct cost + fee from bucket cash
+        state$cash_available[idx] <- round(state$cash_available[idx] - cost - fee, 2)
+
+        message(sprintf(
+          "Cross-check: %s — found %d units @ avg cost $%.2f, deducting $%.2f from bucket.",
+          matched, units, avg_cost, cost + fee
+        ))
+      }
+    }
 
     save_state(state)
     return(state)

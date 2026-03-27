@@ -7,8 +7,8 @@
 #   1. Confirm the IBKR session is alive
 #   2. Resolve ETF conids dynamically
 #   3. Load current price from saved history (maintained by quant_fetch_price_hist.R)
-#   4. Load current state (positions and cash per bucket)
-#   5. Cross-check state against live IBKR positions
+#   4. Fetch IBKR positions (used for state initialisation and stop loss)
+#   5. Load current state (positions and cash per bucket)
 #   6. For each ETF: generate signal, check stop loss, size and place order
 #   7. Save updated state
 #
@@ -104,32 +104,9 @@ for (symbol in etf_symbols) {
   })
 }
 
-# Step 4: Load state -----------------------------------------------------------
+# Step 4: Fetch IBKR positions (needed for state initialisation) ---------------
 
-log_info("Step 4: Loading state...")
-
-ibkr_cash <- tryCatch({
-  summary <- ibkr_get_summary(ibkr_account_id)
-  cash <- as.numeric(summary$totalcashvalue$amount)
-  log_info("IBKR total cash balance: ${sprintf('%.2f', cash)}")
-  cash
-}, error = function(e) {
-  log_warn("Could not fetch IBKR cash balance: {e$message}. Will use total_capital fallback if needed.")
-  NULL
-})
-
-state <- load_state(ibkr_cash = ibkr_cash)
-
-log_info("Current state:")
-for (i in seq_len(nrow(state))) {
-  log_info(
-    "  {state$symbol[i]}: {state$units_held[i]} units held, ${sprintf('%.2f', state$cash_available[i])} cash available"
-  )
-}
-
-# Step 5: Cross-check against IBKR positions -----------------------------------
-
-log_info("Step 5: Fetching IBKR positions for cross-check...")
+log_info("Step 4: Fetching IBKR positions...")
 
 ibkr_positions <- tryCatch({
   positions <- ibkr_get_positions(ibkr_account_id)
@@ -148,6 +125,29 @@ ibkr_positions <- tryCatch({
   log_warn("Could not fetch IBKR positions: {e$message}. Proceeding with local state only.")
   data.frame()
 })
+
+# Step 5: Load state -----------------------------------------------------------
+
+log_info("Step 5: Loading state...")
+
+ibkr_cash <- tryCatch({
+  summary <- ibkr_get_summary(ibkr_account_id)
+  cash <- as.numeric(summary$totalcashvalue$amount)
+  log_info("IBKR total cash balance: ${sprintf('%.2f', cash)}")
+  cash
+}, error = function(e) {
+  log_warn("Could not fetch IBKR cash balance: {e$message}. Will use total_capital fallback if needed.")
+  NULL
+})
+
+state <- load_state(ibkr_cash = ibkr_cash, ibkr_positions = ibkr_positions)
+
+log_info("Current state:")
+for (i in seq_len(nrow(state))) {
+  log_info(
+    "  {state$symbol[i]}: {state$units_held[i]} units held, ${sprintf('%.2f', state$cash_available[i])} cash available"
+  )
+}
 
 # Step 6: Generate signals and trade -------------------------------------------
 
