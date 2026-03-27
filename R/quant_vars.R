@@ -1,9 +1,13 @@
 # =============================================================================
 # quant_vars.R
-# Live trading configuration
+# Shared configuration for all quant trading scripts
 #
-# All parameters that drive live trading behaviour are defined here.
-# Source this file at the top of quant_trader.R and quant_functions.R.
+# Location: R/quant_vars.R
+# Sourced by:
+#   - R/live_trading/quant_trader.R
+#   - R/live_trading/quant_functions.R
+#   - R/fetch_historical_prices/quant_fetch_price_hist.R
+#   - R/dashboard/quant_dashboard.R
 #
 # Setup:
 #   Add the following to your .Renviron file (run usethis::edit_r_environ()):
@@ -40,7 +44,8 @@ etf_strategies <- list(
 
 # Capital configuration --------------------------------------------------------
 
-# Total capital allocated to live trading (AUD)
+# Total capital allocated to live trading (AUD) — used as fallback on first run
+# if IBKR cash balance cannot be fetched
 total_capital <- 5000
 
 # Capital split per ETF (CAPS-weighted, Decision 9)
@@ -68,6 +73,13 @@ state_file <- file.path(project_root, "outputs", "live_trading", "state.rds")
 
 # Trade log — append-only record of every order placed
 trade_log_file <- file.path(project_root, "outputs", "live_trading", "trade_log.csv")
+
+# Price history folder — one .rds file per ETF, maintained by quant_fetch_price_hist.R
+prices_dir <- file.path(project_root, "outputs", "live_trading", "prices")
+
+# Log directories
+live_trading_log_dir  <- file.path(project_root, "outputs", "live_trading", "logs")
+price_fetch_log_dir   <- file.path(project_root, "outputs", "live_trading", "logs")
 
 # Signal parameters ------------------------------------------------------------
 

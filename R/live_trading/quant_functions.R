@@ -234,15 +234,13 @@ price_df_to_xts <- function(price_df, symbol) {
 
 #' Generate today's trading signal for a single ETF
 #'
-#' Applies the ETF's assigned strategy to price history and returns the latest
-#' signal.
+#' Loads cumulative price history from disk (saved by quant_fetch_price_hist.R)
+#' and applies the ETF's assigned strategy to return today's signal.
 #'
 #' @param symbol ETF symbol including .AX suffix (e.g. "VGS.AX")
-#' @param price_df Data frame of daily OHLCV bars as returned by
-#'   ibkr_get_price_history() (stored in price_history[[symbol]] in
-#'   quant_trader.R)
+#' @param units_held Integer units currently held (used by buy_hold strategy)
 #' @return Character string: "buy", "sell", or "hold"
-generate_signal <- function(symbol, price_df) {
+generate_signal <- function(symbol, units_held = 0L) {
   strategy_config <- etf_strategies[[symbol]]
 
   if (is.null(strategy_config)) {
@@ -251,8 +249,21 @@ generate_signal <- function(symbol, price_df) {
 
   strategy <- strategy_config$strategy
 
-  # buy_hold never generates a sell signal
-  if (strategy == "buy_hold") return("buy")
+  # buy_hold: buy when not invested, hold when already invested
+  if (strategy == "buy_hold") {
+    return(if (units_held > 0L) "hold" else "buy")
+  }
+
+  # Load cumulative price history from disk
+  hist_file <- file.path(prices_dir, paste0(symbol, ".rds"))
+  if (!file.exists(hist_file)) {
+    stop(sprintf(
+      "No price history file found for %s at %s. Run quant_fetch_price_hist.R first.",
+      symbol, hist_file
+    ))
+  }
+
+  price_df <- readRDS(hist_file)
 
   if (nrow(price_df) < 50) {
     stop(sprintf("Insufficient price history for %s (%d bars).", symbol, nrow(price_df)))
