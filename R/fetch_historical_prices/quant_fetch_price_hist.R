@@ -67,7 +67,7 @@ log_layout(layout_glue_generator(
 #' @return Character vector of MD5 hashes, one per row
 compute_md5 <- function(df) {
   concat <- paste(
-    df$date, df$open, df$high, df$low, df$close, df$volume,
+    df$date, df$open, df$high, df$low, df$close,
     sep = "|"
   )
   as.character(openssl::md5(concat))
