@@ -206,10 +206,7 @@ ui <- page_navbar(
       card_body(
         fluidRow(
           column(3, selectInput("signal_symbol", "Symbol",
-            choices = etf_symbols, selected = etf_symbols[1], width = "100%")),
-          column(3, selectInput("signal_overlay", "Overlay",
-            choices  = c("None", "MACD-V", "RSI"),
-            selected = "None", width = "100%"))
+            choices = etf_symbols, selected = etf_symbols[1], width = "100%"))
         ),
         plotlyOutput("signal_chart", height = "500px")
       )
@@ -398,11 +395,15 @@ server <- function(input, output, session) {
 
   output$signal_chart <- renderPlotly({
     symbol    <- input$signal_symbol
-    overlay   <- input$signal_overlay
     trade_log <- trade_data()
     req(symbol)
 
     price_df <- load_price_history(symbol)
+
+    # Auto-select overlay based on ETF strategy
+    strategy <- etf_strategies[[symbol]]$strategy
+    overlay  <- if (grepl("macd_vol_dynamic", strategy)) "MACD-V" else
+                if (strategy == "rsi")                   "RSI"    else "None"
 
     empty_chart <- function(msg) {
       plot_ly() |> layout(paper_bgcolor="#0a0e1a", plot_bgcolor="#0d1526",
@@ -412,150 +413,169 @@ server <- function(input, output, session) {
     }
 
     if (is.null(price_df)) return(empty_chart(paste("No price history for", symbol)))
-
     price_df <- price_df |> mutate(date = as.Date(date))
 
-    # Filter trades for this symbol
     sym_trades <- if (!is.null(trade_log)) trade_log |> filter(symbol == !!symbol) else data.frame()
     buys  <- if (nrow(sym_trades) > 0) sym_trades |> filter(side == "BUY")  else data.frame()
     sells <- if (nrow(sym_trades) > 0) sym_trades |> filter(side == "SELL") else data.frame()
 
-    # Build subplot based on overlay selection
+    # Shared layout options
+    shared_xaxis <- list(gridcolor="#1a2535", linecolor="#1e2d3d",
+      tickfont=list(color="#546e7a"), showspikes=TRUE,
+      spikecolor="#4fc3f7", spikethickness=1, spikemode="across")
+    shared_yaxis_price <- list(title="Price (AUD)", gridcolor="#1a2535",
+      linecolor="#1e2d3d", tickprefix="$", tickfont=list(color="#546e7a"))
+
+    # Helper to add trade markers with indicator context in hover
+    add_trade_markers <- function(p, buys, sells, indicator_df=NULL) {
+      if (nrow(buys) > 0) {
+        buy_text <- mapply(function(d, pr, u) {
+          ind <- if (!is.null(indicator_df)) {
+            row <- indicator_df[as.Date(indicator_df$date) == as.Date(d), ]
+            if (nrow(row) > 0 && overlay == "MACD-V")
+              sprintf("<br>MACD-V: %.2f | Signal line: %.2f<br><i>Histogram crossed above zero ↑</i>",
+                row$macdv[1], row$macdv_signal[1])
+            else if (nrow(row) > 0 && overlay == "RSI")
+              sprintf("<br>RSI: %.1f<br><i>Below 30 — oversold ↑</i>", row$rsi[1])
+            else ""
+          } else ""
+          sprintf("<b>BUY</b> — %s<br>Price: $%.2f | Units: %s%s", d, pr, format(u,big.mark=","), ind)
+        }, buys$date, buys$price, buys$units, SIMPLIFY=TRUE)
+        p <- p |> add_markers(data=buys, x=~date, y=~price, name="BUY",
+          marker=list(symbol="triangle-up", size=14, color="#26a69a",
+            line=list(color="#1a7a70", width=1)),
+          text=buy_text, hoverinfo="text")
+      }
+      if (nrow(sells) > 0) {
+        sell_text <- mapply(function(d, pr, u) {
+          ind <- if (!is.null(indicator_df)) {
+            row <- indicator_df[as.Date(indicator_df$date) == as.Date(d), ]
+            if (nrow(row) > 0 && overlay == "MACD-V")
+              sprintf("<br>MACD-V: %.2f | Signal line: %.2f<br><i>Histogram crossed below zero ↓</i>",
+                row$macdv[1], row$macdv_signal[1])
+            else if (nrow(row) > 0 && overlay == "RSI")
+              sprintf("<br>RSI: %.1f<br><i>Above 70 — overbought ↓</i>", row$rsi[1])
+            else ""
+          } else ""
+          sprintf("<b>SELL</b> — %s<br>Price: $%.2f | Units: %s%s", d, pr, format(u,big.mark=","), ind)
+        }, sells$date, sells$price, sells$units, SIMPLIFY=TRUE)
+        p <- p |> add_markers(data=sells, x=~date, y=~price, name="SELL",
+          marker=list(symbol="triangle-down", size=14, color="#ef5350",
+            line=list(color="#b03030", width=1)),
+          text=sell_text, hoverinfo="text")
+      }
+      p
+    }
+
     if (overlay == "MACD-V") {
 
-      # Calculate MACD-V
-      atr_obj    <- TTR::ATR(as.matrix(price_df[, c("high","low","close")]), n = 26)
-      atr_vec    <- as.numeric(atr_obj[, "atr"])
-      safe_atr   <- pmax(atr_vec, 1e-8)
+      atr_obj    <- TTR::ATR(as.matrix(price_df[, c("high","low","close")]), n=26)
+      safe_atr   <- pmax(as.numeric(atr_obj[,"atr"]), 1e-8)
       macd_obj   <- TTR::MACD(price_df$close, nFast=12, nSlow=26, nSig=9, maType=TTR::EMA, percent=FALSE)
       macd_line  <- as.numeric(macd_obj[,"macd"])
       macdv_line <- (macd_line / safe_atr) * 100
       macdv_sig  <- as.numeric(TTR::EMA(macdv_line, n=9))
       hist_vals  <- macdv_line - macdv_sig
       hist_col   <- ifelse(hist_vals >= 0, "#26a69a", "#ef5350")
+      indicator_df <- data.frame(date=price_df$date, macdv=macdv_line, macdv_signal=macdv_sig)
 
       p1 <- plot_ly(data=price_df, x=~date) |>
-        add_lines(y=~close, name="Price", line=list(color="#4fc3f7", width=1.5)) |>
-        layout(yaxis=list(title="Price (AUD)", gridcolor="#1a2535", tickprefix="$",
-          linecolor="#1e2d3d", tickfont=list(color="#546e7a")))
-
-      if (nrow(buys) > 0) {
-        p1 <- p1 |> add_markers(data=buys, x=~date, y=~price, name="BUY",
-          marker=list(symbol="triangle-up", size=12, color="#26a69a"),
-          text=~sprintf("<b>BUY</b><br>%s<br>$%.2f<br>%s units<br>Signal: %s",
-            date, price, format(units,big.mark=","), signal), hoverinfo="text")
-      }
-      if (nrow(sells) > 0) {
-        p1 <- p1 |> add_markers(data=sells, x=~date, y=~price, name="SELL",
-          marker=list(symbol="triangle-down", size=12, color="#ef5350"),
-          text=~sprintf("<b>SELL</b><br>%s<br>$%.2f<br>%s units<br>Signal: %s",
-            date, price, format(units,big.mark=","), signal), hoverinfo="text")
-      }
+        add_lines(y=~close, name="Price", line=list(color="#4fc3f7", width=1.5),
+          hovertemplate="Price: $%{y:.2f}<extra></extra>") |>
+        layout(yaxis=shared_yaxis_price)
+      p1 <- add_trade_markers(p1, buys, sells, indicator_df)
 
       p2 <- plot_ly(x=price_df$date) |>
-        add_bars(y=hist_vals, name="MACD-V Hist",
-          marker=list(color=hist_col, line=list(width=0))) |>
-        add_lines(y=macdv_line, name="MACD-V", line=list(color="#4fc3f7", width=1)) |>
-        add_lines(y=macdv_sig,  name="Signal",  line=list(color="#ffa726", width=1, dash="dot")) |>
+        add_bars(y=hist_vals, name="Histogram",
+          marker=list(color=hist_col, line=list(width=0)),
+          hovertemplate="Hist: %{y:.2f}<extra></extra>") |>
+        add_lines(y=macdv_line, name="MACD-V", line=list(color="#4fc3f7", width=1.5),
+          hovertemplate="MACD-V: %{y:.2f}<extra></extra>") |>
+        add_lines(y=macdv_sig, name="Signal line", line=list(color="#ffa726", width=1, dash="dot"),
+          hovertemplate="Signal: %{y:.2f}<extra></extra>") |>
         layout(yaxis=list(title="MACD-V", gridcolor="#1a2535",
           linecolor="#1e2d3d", tickfont=list(color="#546e7a")))
 
       subplot(p1, p2, nrows=2, shareX=TRUE, heights=c(0.65, 0.35), titleY=TRUE) |>
-        layout(paper_bgcolor="#0a0e1a", plot_bgcolor="#0d1526",
+        layout(
+          paper_bgcolor="#0a0e1a", plot_bgcolor="#0d1526",
           font=list(color="#b0bec5", family="JetBrains Mono", size=11),
-          title=list(text=paste(symbol,"— Price & MACD-V"),
-            font=list(color="#4fc3f7", family="Space Mono", size=13)),
-          xaxis=list(gridcolor="#1a2535", linecolor="#1e2d3d", tickfont=list(color="#546e7a")),
-          legend=list(bgcolor="#111d2e", bordercolor="#1e2d3d", borderwidth=1,
-            font=list(color="#b0bec5")),
+          hovermode="x unified",
           hoverlabel=list(bgcolor="#111d2e", bordercolor="#4fc3f7",
             font=list(family="JetBrains Mono", size=11)),
-          margin=list(t=50, b=40, l=60, r=20))
+          legend=list(bgcolor="#111d2e", bordercolor="#1e2d3d", borderwidth=1,
+            font=list(color="#b0bec5")),
+          margin=list(t=50, b=40, l=60, r=20),
+          title=list(text=paste(symbol, "— Price & MACD-V"),
+            font=list(color="#4fc3f7", family="Space Mono", size=13)),
+          xaxis=shared_xaxis, xaxis2=shared_xaxis)
 
     } else if (overlay == "RSI") {
 
-      rsi_vals <- as.numeric(TTR::RSI(price_df$close, n=14))
+      rsi_vals     <- as.numeric(TTR::RSI(price_df$close, n=14))
+      indicator_df <- data.frame(date=price_df$date, rsi=rsi_vals)
 
       p1 <- plot_ly(data=price_df, x=~date) |>
-        add_lines(y=~close, name="Price", line=list(color="#4fc3f7", width=1.5)) |>
-        layout(yaxis=list(title="Price (AUD)", gridcolor="#1a2535", tickprefix="$",
-          linecolor="#1e2d3d", tickfont=list(color="#546e7a")))
-
-      if (nrow(buys) > 0) {
-        p1 <- p1 |> add_markers(data=buys, x=~date, y=~price, name="BUY",
-          marker=list(symbol="triangle-up", size=12, color="#26a69a"),
-          text=~sprintf("<b>BUY</b><br>%s<br>$%.2f<br>%s units<br>Signal: %s",
-            date, price, format(units,big.mark=","), signal), hoverinfo="text")
-      }
-      if (nrow(sells) > 0) {
-        p1 <- p1 |> add_markers(data=sells, x=~date, y=~price, name="SELL",
-          marker=list(symbol="triangle-down", size=12, color="#ef5350"),
-          text=~sprintf("<b>SELL</b><br>%s<br>$%.2f<br>%s units<br>Signal: %s",
-            date, price, format(units,big.mark=","), signal), hoverinfo="text")
-      }
+        add_lines(y=~close, name="Price", line=list(color="#4fc3f7", width=1.5),
+          hovertemplate="Price: $%{y:.2f}<extra></extra>") |>
+        layout(yaxis=shared_yaxis_price)
+      p1 <- add_trade_markers(p1, buys, sells, indicator_df)
 
       p2 <- plot_ly(x=price_df$date) |>
-        add_lines(y=rsi_vals, name="RSI", line=list(color="#4fc3f7", width=1.5)) |>
-        add_lines(y=rep(70, nrow(price_df)), name="Overbought",
-          line=list(color="#ef5350", width=1, dash="dash"), showlegend=FALSE) |>
-        add_lines(y=rep(30, nrow(price_df)), name="Oversold",
-          line=list(color="#26a69a", width=1, dash="dash"), showlegend=FALSE) |>
+        add_lines(y=rsi_vals, name="RSI", line=list(color="#4fc3f7", width=1.5),
+          hovertemplate="RSI: %{y:.1f}<extra></extra>") |>
+        add_lines(y=rep(70, nrow(price_df)), name="Overbought (70)",
+          line=list(color="#ef5350", width=1, dash="dash"), hoverinfo="skip") |>
+        add_lines(y=rep(30, nrow(price_df)), name="Oversold (30)",
+          line=list(color="#26a69a", width=1, dash="dash"), hoverinfo="skip") |>
         layout(yaxis=list(title="RSI", range=c(0,100), gridcolor="#1a2535",
           linecolor="#1e2d3d", tickfont=list(color="#546e7a")))
 
       subplot(p1, p2, nrows=2, shareX=TRUE, heights=c(0.65, 0.35), titleY=TRUE) |>
-        layout(paper_bgcolor="#0a0e1a", plot_bgcolor="#0d1526",
+        layout(
+          paper_bgcolor="#0a0e1a", plot_bgcolor="#0d1526",
           font=list(color="#b0bec5", family="JetBrains Mono", size=11),
-          title=list(text=paste(symbol,"— Price & RSI"),
-            font=list(color="#4fc3f7", family="Space Mono", size=13)),
-          xaxis=list(gridcolor="#1a2535", linecolor="#1e2d3d", tickfont=list(color="#546e7a")),
-          legend=list(bgcolor="#111d2e", bordercolor="#1e2d3d", borderwidth=1,
-            font=list(color="#b0bec5")),
+          hovermode="x unified",
           hoverlabel=list(bgcolor="#111d2e", bordercolor="#4fc3f7",
             font=list(family="JetBrains Mono", size=11)),
-          margin=list(t=50, b=40, l=60, r=20))
+          legend=list(bgcolor="#111d2e", bordercolor="#1e2d3d", borderwidth=1,
+            font=list(color="#b0bec5")),
+          margin=list(t=50, b=40, l=60, r=20),
+          title=list(text=paste(symbol, "— Price & RSI"),
+            font=list(color="#4fc3f7", family="Space Mono", size=13)),
+          xaxis=shared_xaxis, xaxis2=shared_xaxis)
 
     } else {
 
-      # No overlay — price only
       p <- plot_ly(data=price_df, x=~date) |>
-        add_lines(y=~close, name="Price", line=list(color="#4fc3f7", width=1.5))
-
-      if (nrow(buys) > 0) {
-        p <- p |> add_markers(data=buys, x=~date, y=~price, name="BUY",
-          marker=list(symbol="triangle-up", size=12, color="#26a69a"),
-          text=~sprintf("<b>BUY</b><br>%s<br>$%.2f<br>%s units<br>Signal: %s",
-            date, price, format(units,big.mark=","), signal), hoverinfo="text")
-      }
-      if (nrow(sells) > 0) {
-        p <- p |> add_markers(data=sells, x=~date, y=~price, name="SELL",
-          marker=list(symbol="triangle-down", size=12, color="#ef5350"),
-          text=~sprintf("<b>SELL</b><br>%s<br>$%.2f<br>%s units<br>Signal: %s",
-            date, price, format(units,big.mark=","), signal), hoverinfo="text")
-      }
-
-      p |> layout(paper_bgcolor="#0a0e1a", plot_bgcolor="#0d1526",
+        add_lines(y=~close, name="Price", line=list(color="#4fc3f7", width=1.5),
+          hovertemplate="Price: $%{y:.2f}<extra></extra>")
+      p <- add_trade_markers(p, buys, sells)
+      p |> layout(
+        paper_bgcolor="#0a0e1a", plot_bgcolor="#0d1526",
         font=list(color="#b0bec5", family="JetBrains Mono", size=11),
-        title=list(text=paste(symbol,"— Price"),
-          font=list(color="#4fc3f7", family="Space Mono", size=13)),
-        xaxis=list(title="", gridcolor="#1a2535", linecolor="#1e2d3d",
-          tickfont=list(color="#546e7a")),
-        yaxis=list(title="Price (AUD)", gridcolor="#1a2535", linecolor="#1e2d3d",
-          tickprefix="$", tickfont=list(color="#546e7a")),
-        legend=list(bgcolor="#111d2e", bordercolor="#1e2d3d", borderwidth=1,
-          font=list(color="#b0bec5")),
+        hovermode="x unified",
         hoverlabel=list(bgcolor="#111d2e", bordercolor="#4fc3f7",
           font=list(family="JetBrains Mono", size=11)),
-        margin=list(t=50, b=40, l=60, r=20))
+        legend=list(bgcolor="#111d2e", bordercolor="#1e2d3d", borderwidth=1,
+          font=list(color="#b0bec5")),
+        margin=list(t=50, b=40, l=60, r=20),
+        title=list(text=paste(symbol, "— Price (Buy & Hold)"),
+          font=list(color="#4fc3f7", family="Space Mono", size=13)),
+        xaxis=c(shared_xaxis, list(title="")),
+        yaxis=shared_yaxis_price)
     }
   })
 
-  # --- Signal History Table ---
+  # --- Signal History Table — filtered by selected symbol ---
 
   output$signals_table <- renderDT({
     trade_log <- trade_data()
+    symbol    <- input$signal_symbol
     if (is.null(trade_log)) return(datatable(data.frame()))
-    display <- trade_log |> arrange(desc(date)) |>
+    display <- trade_log |>
+      filter(symbol == !!symbol) |>
+      arrange(desc(date)) |>
       mutate(price=sprintf("$%.2f",price), fee=sprintf("$%.2f",fee),
              units=format(units,big.mark=",")) |>
       select(date, symbol, side, units, price, fee, signal)
