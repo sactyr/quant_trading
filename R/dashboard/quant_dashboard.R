@@ -82,9 +82,8 @@ check_fetch_status <- function() {
     log_date <- as.character(Sys.Date())
   }
 
-  lines     <- readLines(path)
-  last_line <- tail(lines[nzchar(lines)], 1)
-  success   <- grepl("SUCCESS", last_line, ignore.case = TRUE)
+  lines   <- readLines(path)
+  success <- any(grepl("SUCCESS", lines, ignore.case = TRUE))
 
   list(
     status = if (success) "success" else "error",
