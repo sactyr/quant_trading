@@ -79,6 +79,17 @@ tryCatch({
 
 log_info("Step 3: Loading current prices from saved price history...")
 
+# Calculate the most recent trading day before today
+# If today is Monday, previous trading day is Friday (3 days back)
+today <- Sys.Date()
+days_back <- switch(weekdays(today),
+  "Monday"  = 3L,
+  "Sunday"  = 2L,  # shouldn't run on Sunday but just in case
+  1L                # Tuesday-Saturday: previous calendar day
+)
+expected_latest_date <- today - days_back
+log_info("Expected latest price date: {expected_latest_date}")
+
 current_prices <- list()
 
 for (symbol in etf_symbols) {
@@ -91,11 +102,22 @@ for (symbol in etf_symbols) {
       stop(sprintf("Missing price history file for %s", symbol))
     }
 
-    price_df      <- readRDS(hist_file)
-    latest_close  <- tail(price_df$close, 1)
-    latest_date   <- tail(price_df$date, 1)
-    current_prices[[symbol]] <- latest_close
+    price_df     <- readRDS(hist_file)
+    latest_close <- tail(price_df$close, 1)
+    latest_date  <- tail(price_df$date, 1)
 
+    # Staleness check — abort if price data is more than 1 trading day behind
+    if (latest_date < expected_latest_date) {
+      log_error(
+        "Price history for {symbol} is stale — latest date is {latest_date}, expected {expected_latest_date}."
+      )
+      log_error(
+        "Price fetch likely failed yesterday. Check quant_fetch_price_hist logs and run fetch_prices.sh manually."
+      )
+      stop(sprintf("Stale price history for %s: %s < %s", symbol, latest_date, expected_latest_date))
+    }
+
+    current_prices[[symbol]] <- latest_close
     log_info("  {symbol}: {nrow(price_df)} bars loaded, latest close ${latest_close} ({latest_date})")
 
   }, error = function(e) {
