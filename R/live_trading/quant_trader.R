@@ -33,7 +33,7 @@ source(here("R", "live_trading", "quant_functions.R"))
 
 # Logging setup ----------------------------------------------------------------
 
-log_dir  <- here("outputs", "live_trading", "logs")
+log_dir  <- live_trading_log_dir
 log_file <- file.path(log_dir, sprintf("quant_trader_%s.log", Sys.Date()))
 
 dir.create(log_dir, showWarnings = FALSE, recursive = TRUE)

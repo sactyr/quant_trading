@@ -78,8 +78,8 @@ trade_log_file <- file.path(project_root, "outputs", "live_trading", "trade_log.
 prices_dir <- file.path(project_root, "outputs", "live_trading", "prices")
 
 # Log directories
-live_trading_log_dir  <- file.path(project_root, "outputs", "live_trading", "logs")
-price_fetch_log_dir   <- file.path(project_root, "outputs", "live_trading", "logs")
+live_trading_log_dir  <- file.path(project_root, "outputs", "live_trading", "logs", "quant_trader")
+price_fetch_log_dir   <- file.path(project_root, "outputs", "live_trading", "logs", "quant_fetch_price_hist")
 
 # Signal parameters ------------------------------------------------------------
 

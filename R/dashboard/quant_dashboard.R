@@ -56,29 +56,27 @@ load_price_history <- function(symbol) {
   readRDS(path)
 }
 
-load_log_files <- function(pattern) {
-  log_dir <- file.path(LIVE_TRADING_PATH, "logs")
+load_log_files <- function(pattern, subfolder) {
+  log_dir <- file.path(LIVE_TRADING_PATH, "logs", subfolder)
   if (!dir.exists(log_dir)) return(character(0))
   files <- list.files(log_dir, pattern = pattern, full.names = FALSE)
   sort(files, decreasing = TRUE)
 }
 
-read_log_file <- function(filename) {
-  path <- file.path(LIVE_TRADING_PATH, "logs", filename)
+read_log_file <- function(filename, subfolder) {
+  path <- file.path(LIVE_TRADING_PATH, "logs", subfolder, filename)
   if (!file.exists(path)) return("")
   paste(readLines(path), collapse = "\n")
 }
 
 check_fetch_status <- function() {
-  # Find today's price fetch log
   today_log <- sprintf("quant_fetch_price_hist_%s.log", Sys.Date())
-  path      <- file.path(LIVE_TRADING_PATH, "logs", today_log)
+  path      <- file.path(LIVE_TRADING_PATH, "logs", "quant_fetch_price_hist", today_log)
 
   if (!file.exists(path)) {
-    # Check most recent fetch log
-    logs <- load_log_files("quant_fetch_price_hist_.*\\.log$")
+    logs <- load_log_files("quant_fetch_price_hist_.*\\.log$", "quant_fetch_price_hist")
     if (length(logs) == 0) return(list(status = "unknown", label = "No fetch logs found", date = NA))
-    path     <- file.path(LIVE_TRADING_PATH, "logs", logs[1])
+    path     <- file.path(LIVE_TRADING_PATH, "logs", "quant_fetch_price_hist", logs[1])
     log_date <- sub("quant_fetch_price_hist_(.*)\\.log", "\\1", logs[1])
   } else {
     log_date <- as.character(Sys.Date())
@@ -286,12 +284,12 @@ server <- function(input, output, session) {
 
   trade_log_files <- reactive({
     input$refresh_all; input$refresh_logs
-    load_log_files("quant_trader_.*\\.log$")
+    load_log_files("quant_trader_.*\\.log$", "quant_trader")
   })
 
   fetch_log_files <- reactive({
     input$refresh_all; input$refresh_logs
-    load_log_files("quant_fetch_price_hist_.*\\.log$")
+    load_log_files("quant_fetch_price_hist_.*\\.log$", "quant_fetch_price_hist")
   })
 
   observe({
@@ -602,39 +600,19 @@ server <- function(input, output, session) {
 
   # --- Log Viewer ---
 
-  active_log_file <- reactive({
-    # Show whichever log selector was most recently interacted with
-    if (!is.null(input$fetch_log_select) && nchar(input$fetch_log_select) > 0 &&
-        grepl("fetch", input$fetch_log_select)) {
-      input$fetch_log_select
-    } else {
-      input$trade_log_select
-    }
-  })
-
   output$log_contents <- renderUI({
     req(input$trade_log_select)
-    # Determine which log to show based on last clicked
-    selected <- if (!is.null(input$fetch_log_select) &&
-                    nchar(coalesce(input$fetch_log_select, "")) > 0) {
-      # Show fetch log if it was explicitly selected
-      input$fetch_log_select
-    } else {
-      input$trade_log_select
-    }
-    req(selected)
-    contents <- read_log_file(selected)
+    contents <- read_log_file(input$trade_log_select, "quant_trader")
     HTML(colour_log_lines(contents))
   })
 
-  # Update log viewer when either selector changes
   observeEvent(input$trade_log_select, {
-    contents <- read_log_file(input$trade_log_select)
+    contents <- read_log_file(input$trade_log_select, "quant_trader")
     output$log_contents <- renderUI({ HTML(colour_log_lines(contents)) })
   })
 
   observeEvent(input$fetch_log_select, {
-    contents <- read_log_file(input$fetch_log_select)
+    contents <- read_log_file(input$fetch_log_select, "quant_fetch_price_hist")
     output$log_contents <- renderUI({ HTML(colour_log_lines(contents)) })
   })
 }
