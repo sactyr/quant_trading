@@ -260,7 +260,74 @@ ibkr_get_conids <- function(symbols) {
   conids
 }
 
-#' Get daily price history for a single conid
+#' Get upcoming ASX non-trading dates from IBKR schedule endpoint
+#'
+#' Queries the IBKR trading schedule for ASX and returns a vector of upcoming
+#' dates where the exchange is closed (public holidays, weekends excluded).
+#' Used by quant_trader.R to determine the most recent valid trading day
+#' for the price history staleness check.
+#'
+#' @param symbol ASX ticker symbol without .AX suffix (default: "VGS")
+#' @return Character vector of non-trading dates in "YYYY-MM-DD" format,
+#'   excluding dates from the weekly template (year 2000)
+ibkr_get_non_trading_dates <- function(symbol = "VGS") {
+  resp <- ibkr_get("/trsrv/secdef/schedule", params = list(
+    assetClass = "STK",
+    symbol     = symbol,
+    exchange   = "ASX"
+  ))
+
+  if (length(resp) == 0) return(character(0))
+
+  # Use the first exchange entry (ASX)
+  asx <- Filter(function(x) x$exchange == "ASX", resp)
+  if (length(asx) == 0) asx <- resp[1]
+
+  schedules <- asx[[1]]$schedules
+
+  # Extract non-trading dates — sessions is empty and date is not a template date
+  # Template dates use year 2000 (20000101-20000107), skip those
+  non_trading <- Filter(function(s) {
+    date_str <- as.character(s$tradingScheduleDate)
+    is_real_date <- !startsWith(date_str, "2000")
+    has_no_sessions <- length(s$sessions) == 0
+    is_real_date && has_no_sessions
+  }, schedules)
+
+  dates <- sapply(non_trading, function(s) {
+    d <- as.character(s$tradingScheduleDate)
+    format(as.Date(d, "%Y%m%d"), "%Y-%m-%d")
+  })
+
+  as.character(dates)
+}
+
+#' Get the most recent ASX trading day before a given date
+#'
+#' Steps back from the given date, skipping weekends and known public holidays
+#' from the IBKR trading schedule. Used by quant_trader.R to determine the
+#' expected latest price date.
+#'
+#' @param date Date to step back from (default: today)
+#' @param non_trading_dates Character vector of non-trading dates in "YYYY-MM-DD"
+#'   format, as returned by ibkr_get_non_trading_dates()
+#' @return Date of the most recent trading day before the given date
+ibkr_last_trading_day <- function(date = Sys.Date(), non_trading_dates = character(0)) {
+  d <- as.Date(date) - 1
+  max_steps <- 10  # safety limit
+  steps <- 0
+  while (steps < max_steps) {
+    day_of_week <- weekdays(d)
+    is_weekend  <- day_of_week %in% c("Saturday", "Sunday")
+    is_holiday  <- format(d, "%Y-%m-%d") %in% non_trading_dates
+    if (!is_weekend && !is_holiday) return(d)
+    d <- d - 1
+    steps <- steps + 1
+  }
+  d  # fallback
+}
+
+
 #'
 #' Fetches daily OHLCV bars from IBKR for use in signal generation and order
 #' sizing. This is the sole price data source for live trading — Yahoo Finance

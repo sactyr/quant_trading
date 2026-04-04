@@ -79,15 +79,17 @@ tryCatch({
 
 log_info("Step 3: Loading current prices from saved price history...")
 
-# Calculate the most recent trading day before today
-# If today is Monday, previous trading day is Friday (3 days back)
+# Determine the most recent ASX trading day before today using IBKR schedule
 today <- Sys.Date()
-days_back <- switch(weekdays(today),
-  "Monday"  = 3L,
-  "Sunday"  = 2L,  # shouldn't run on Sunday but just in case
-  1L                # Tuesday-Saturday: previous calendar day
-)
-expected_latest_date <- today - days_back
+non_trading_dates <- tryCatch({
+  dates <- ibkr_get_non_trading_dates()
+  log_info("Fetched {length(dates)} upcoming non-trading date(s) from IBKR.")
+  dates
+}, error = function(e) {
+  log_warn("Could not fetch trading schedule: {e$message}. Falling back to weekday check only.")
+  character(0)
+})
+expected_latest_date <- ibkr_last_trading_day(today, non_trading_dates)
 log_info("Expected latest price date: {expected_latest_date}")
 
 current_prices <- list()
@@ -106,13 +108,13 @@ for (symbol in etf_symbols) {
     latest_close <- tail(price_df$close, 1)
     latest_date  <- tail(price_df$date, 1)
 
-    # Staleness check — abort if price data is more than 1 trading day behind
+    # Staleness check — abort if latest price date is before the expected trading day
     if (latest_date < expected_latest_date) {
       log_error(
         "Price history for {symbol} is stale — latest date is {latest_date}, expected {expected_latest_date}."
       )
       log_error(
-        "Price fetch likely failed yesterday. Check quant_fetch_price_hist logs and run fetch_prices.sh manually."
+        "Price fetch likely failed. Check quant_fetch_price_hist logs and run fetch_prices.sh manually."
       )
       stop(sprintf("Stale price history for %s: %s < %s", symbol, latest_date, expected_latest_date))
     }
