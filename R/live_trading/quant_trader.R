@@ -1,22 +1,21 @@
-# =============================================================================
 # quant_trader.R
 # Main daily entry point for live trading
 #
 # Run this script once per trading day at 10:15 AM AEDT via cron.
 # It will:
 #   1. Confirm the IBKR session is alive
-#   2. Resolve ETF conids dynamically
-#   3. Load current price from saved history (maintained by quant_fetch_price_hist.R)
-#   4. Fetch IBKR positions (used for state initialisation and stop loss)
-#   5. Load current state (positions and cash per bucket)
-#   6. For each ETF: generate signal, check stop loss, size and place order
-#   7. Save updated state
+#   2. Check if today is a trading day — exit early if not (public holiday)
+#   3. Resolve ETF conids dynamically
+#   4. Load current price from saved history (maintained by quant_fetch_price_hist.R)
+#   5. Fetch IBKR positions (used for state initialisation and stop loss)
+#   6. Load current state (positions and cash per bucket)
+#   7. For each ETF: generate signal, check stop loss, size and place order
+#   8. Save updated state
 #
 # Prerequisites:
 #   - Client Portal Gateway must be running and authenticated
 #   - IBKR_ACCOUNT_ID must be set in .Renviron
 #   - quant_fetch_price_hist.R must have run at least once to create price files
-# =============================================================================
 
 suppressPackageStartupMessages({
   library(logger)
@@ -62,9 +61,38 @@ tryCatch({
   stop(e)
 })
 
-# Step 2: Resolve conids -------------------------------------------------------
+# Step 2: Check if today is a trading day --------------------------------------
 
-log_info("Step 2: Resolving conids for {paste(etf_symbols_ibkr, collapse = ', ')}...")
+log_info("Step 2: Checking if today is a trading day...")
+
+non_trading_dates <- tryCatch({
+  dates <- ibkr_get_non_trading_dates()
+  log_info("Fetched {length(dates)} upcoming non-trading date(s) from IBKR.")
+  dates
+}, error = function(e) {
+  log_warn("Could not fetch trading schedule: {e$message}. Falling back to weekday check only.")
+  character(0)
+})
+
+today_str <- format(Sys.Date(), "%Y-%m-%d")
+
+if (today_str %in% non_trading_dates) {
+  log_info("Today ({today_str}) is a non-trading day. No trading to run.")
+  log_success("quant_trader.R completed — {Sys.time()}")
+  quit(save = "no", status = 0)
+}
+
+if (weekdays(Sys.Date()) %in% c("Saturday", "Sunday")) {
+  log_info("Today ({today_str}) is a weekend. No trading to run.")
+  log_success("quant_trader.R completed — {Sys.time()}")
+  quit(save = "no", status = 0)
+}
+
+log_info("Today ({today_str}) is a trading day. Proceeding.")
+
+# Step 3: Resolve conids -------------------------------------------------------
+
+log_info("Step 3: Resolving conids for {paste(etf_symbols_ibkr, collapse = ', ')}...")
 
 tryCatch({
   conids <- ibkr_get_conids(etf_symbols_ibkr)
@@ -75,20 +103,13 @@ tryCatch({
   stop(e)
 })
 
-# Step 3: Load current prices from saved history --------------------------------
+# Step 4: Load current prices from saved history --------------------------------
 
-log_info("Step 3: Loading current prices from saved price history...")
+log_info("Step 4: Loading current prices from saved price history...")
 
 # Determine the most recent ASX trading day before today using IBKR schedule
-today <- Sys.Date()
-non_trading_dates <- tryCatch({
-  dates <- ibkr_get_non_trading_dates()
-  log_info("Fetched {length(dates)} upcoming non-trading date(s) from IBKR.")
-  dates
-}, error = function(e) {
-  log_warn("Could not fetch trading schedule: {e$message}. Falling back to weekday check only.")
-  character(0)
-})
+# non_trading_dates already fetched in Step 2 — reuse here
+today                <- Sys.Date()
 expected_latest_date <- ibkr_last_trading_day(today, non_trading_dates)
 log_info("Expected latest price date: {expected_latest_date}")
 
@@ -128,9 +149,9 @@ for (symbol in etf_symbols) {
   })
 }
 
-# Step 4: Fetch IBKR positions (needed for state initialisation) ---------------
+# Step 5: Fetch IBKR positions (needed for state initialisation) ---------------
 
-log_info("Step 4: Fetching IBKR positions...")
+log_info("Step 5: Fetching IBKR positions...")
 
 ibkr_positions <- tryCatch({
   positions <- ibkr_get_positions(ibkr_account_id)
@@ -150,9 +171,9 @@ ibkr_positions <- tryCatch({
   data.frame()
 })
 
-# Step 5: Load state -----------------------------------------------------------
+# Step 6: Load state -----------------------------------------------------------
 
-log_info("Step 5: Loading state...")
+log_info("Step 6: Loading state...")
 
 ibkr_cash <- tryCatch({
   summary <- ibkr_get_summary(ibkr_account_id)
@@ -173,9 +194,9 @@ for (i in seq_len(nrow(state))) {
   )
 }
 
-# Step 6: Generate signals and trade -------------------------------------------
+# Step 7: Generate signals and trade -------------------------------------------
 
-log_info("Step 6: Generating signals and placing orders...")
+log_info("Step 7: Generating signals and placing orders...")
 
 for (symbol in etf_symbols) {
 
@@ -281,9 +302,9 @@ for (symbol in etf_symbols) {
   }
 }
 
-# Step 7: Save state -----------------------------------------------------------
+# Step 8: Save state -----------------------------------------------------------
 
-log_info("Step 7: Saving state...")
+log_info("Step 8: Saving state...")
 save_state(state)
 log_info("State saved.")
 
