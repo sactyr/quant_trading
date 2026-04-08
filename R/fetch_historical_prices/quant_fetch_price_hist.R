@@ -1,11 +1,11 @@
-# =============================================================================
 # quant_fetch_price_hist.R
 # Fetches and maintains cumulative daily price history for all ETFs
 #
-# Runs daily at 4:30 PM AEDT (after ASX close) via cron:
-#   30 16 * * 1-5 cd ~/quant_trading && Rscript R/fetch_historical_prices/quant_fetch_price_hist.R >> outputs/live_trading/logs/cron.log 2>&1
+# Runs daily at 9:45 AM AEST (before ASX open) via cron:
+#   45 9 * * 1-5 bash /home/sactyr/ib-gateway/fetch_prices.sh >> /home/sactyr/quant_trading/outputs/live_trading/logs/cron.log 2>&1
 #
 # For each ETF:
+#   - Checks if today is a trading day — exits early if not (public holiday)
 #   - Fetches 1yr of daily OHLCV bars from IBKR
 #   - Computes MD5 hash per row for deduplication
 #   - Merges new rows into cumulative history file
@@ -15,9 +15,8 @@
 # On first run (no history file exists):
 #   - Saves full 1yr history as baseline
 #
-# Price history files are synced to Google Drive by start.sh after each
-# trading run. The dashboard reads from the Google Drive synced copy.
-# =============================================================================
+# Price history files are synced to Google Drive by fetch_prices.sh after
+# each run. The dashboard reads from the Google Drive synced copy.
 
 suppressPackageStartupMessages({
   library(here)
@@ -30,16 +29,14 @@ suppressPackageStartupMessages({
 
 Sys.setenv(TZ = "Australia/Sydney")
 
-# =============================================================================
-# Source shared config and IBKR API wrapper
-# =============================================================================
+
+# Source shared config and IBKR API wrapper -------------------------------
 
 source(here("R", "quant_vars.R"))
 source(here("R", "live_trading", "ibkr_api.R"))
 
-# =============================================================================
-# Logging setup
-# =============================================================================
+
+# Logging setup -----------------------------------------------------------
 
 dir.create(price_fetch_log_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -53,17 +50,17 @@ log_layout(layout_glue_generator(
   format = '[{format(time, "%Y-%m-%d %H:%M:%S")}] | {toupper(sprintf("%-7s", level))} | {msg}'
 ))
 
-# =============================================================================
-# Helper functions
-# =============================================================================
+
+# Helper functions --------------------------------------------------------
 
 #' Compute MD5 hash for a price history row
 #'
-#' Concatenates all OHLCV fields (excluding dttm_updated and md5_hash) into a
-#' single string and computes its MD5 hash. Used for deduplication when merging
-#' new rows into the cumulative history.
+#' Concatenates date+OHLC fields (excluding volume and dttm_updated)into a 
+#' single string and computes its MD5 hash. Volume is excluded because
+#' IBKR occasionally revises volume slightly between fetches for the same bar.
+#' Used for deduplication when merging new rows into the cumulative history.
 #'
-#' @param df Data frame with columns: date, open, high, low, close, volume
+#' @param df Data frame with columns: date, open, high, low, close
 #' @return Character vector of MD5 hashes, one per row
 compute_md5 <- function(df) {
   concat <- paste(
@@ -82,8 +79,10 @@ compute_md5 <- function(df) {
 #' @param symbol ETF symbol including .AX suffix (e.g. "VGS.AX")
 #' @param conid IBKR contract ID for the symbol
 #' @param base_df Existing price history data frame, or NULL on first run
+#' @param non_trading_dates Character vector of known non-trading dates in
+#'   "YYYY-MM-DD" format, used to suppress false gap warnings
 #' @return Updated data frame with new rows merged, or NULL if no new rows
-merge_price_history <- function(symbol, conid, base_df) {
+merge_price_history <- function(symbol, conid, base_df, non_trading_dates = character(0)) {
 
   # Fetch latest 1yr from IBKR
   log_info("Fetching price history from IBKR for {symbol}...")
@@ -116,33 +115,30 @@ merge_price_history <- function(symbol, conid, base_df) {
   merged_df <- bind_rows(base_df, new_rows) |> arrange(date)
 
   # Validate no missing trading dates
-  # Generate expected sequence of weekdays (Mon-Fri) between first and last date
-  all_dates      <- seq.Date(min(merged_df$date), max(merged_df$date), by = "day")
-  weekdays_only  <- all_dates[!weekdays(all_dates) %in% c("Saturday", "Sunday")]
-  missing_dates  <- setdiff(as.character(weekdays_only), as.character(merged_df$date))
+  # Generate expected weekdays (Mon-Fri) then exclude known non-trading dates
+  all_dates     <- seq.Date(min(merged_df$date), max(merged_df$date), by = "day")
+  weekdays_only <- all_dates[!weekdays(all_dates) %in% c("Saturday", "Sunday")]
+  trading_days  <- weekdays_only[!as.character(weekdays_only) %in% non_trading_dates]
+  missing_dates <- setdiff(as.character(trading_days), as.character(merged_df$date))
 
-  # Allow up to 10 missing dates (public holidays, exchange closures)
-  if (length(missing_dates) > 10) {
-    log_warn("{symbol}: {length(missing_dates)} missing dates detected — may indicate gaps.")
-    log_warn("{symbol}: First 5 missing: {paste(head(missing_dates, 5), collapse = ', ')}")
-  } else if (length(missing_dates) > 0) {
-    log_info("{symbol}: {length(missing_dates)} missing date(s) — likely public holidays.")
+  if (length(missing_dates) > 0) {
+    log_warn("{symbol}: {length(missing_dates)} missing trading date(s) detected.")
+    log_warn("{symbol}: Missing: {paste(head(missing_dates, 5), collapse = ', ')}")
   }
 
   log_info("{symbol}: Merge complete — {nrow(merged_df)} total bars.")
   merged_df
 }
 
-# =============================================================================
-# Main
-# =============================================================================
+
+# Main --------------------------------------------------------------------
 
 log_info("=============================================================")
 log_info("quant_fetch_price_hist.R started — {Sys.time()}")
 log_info("ETF universe: {paste(etf_symbols, collapse = ', ')}")
 log_info("=============================================================")
 
-# Step 1: Authenticate with IBKR ----------------------------------------------
+## Step 1: Authenticate with IBKR -----------------------------------------
 
 log_info("Step 1: Confirming IBKR session...")
 
@@ -154,9 +150,38 @@ tryCatch({
   stop(e)
 })
 
-# Step 2: Resolve conids -------------------------------------------------------
+## Step 2: Check if today is a trading day ---------------------------------
 
-log_info("Step 2: Resolving conids for {paste(etf_symbols_ibkr, collapse = ', ')}...")
+log_info("Step 2: Checking if today is a trading day...")
+
+non_trading_dates <- tryCatch({
+  dates <- ibkr_get_non_trading_dates()
+  log_info("Fetched {length(dates)} upcoming non-trading date(s) from IBKR.")
+  dates
+}, error = function(e) {
+  log_warn("Could not fetch trading schedule: {e$message}. Proceeding without holiday check.")
+  character(0)
+})
+
+today_str <- format(Sys.Date(), "%Y-%m-%d")
+
+if (today_str %in% non_trading_dates) {
+  log_info("Today ({today_str}) is a non-trading day. No prices to fetch.")
+  log_success("quant_fetch_price_hist.R completed — {Sys.time()}")
+  quit(save = "no", status = 0)
+}
+
+if (weekdays(Sys.Date()) %in% c("Saturday", "Sunday")) {
+  log_info("Today ({today_str}) is a weekend. No prices to fetch.")
+  log_success("quant_fetch_price_hist.R completed — {Sys.time()}")
+  quit(save = "no", status = 0)
+}
+
+log_info("Today ({today_str}) is a trading day. Proceeding.")
+
+## Step 3: Resolve conids -------------------------------------------------
+
+log_info("Step 3: Resolving conids for {paste(etf_symbols_ibkr, collapse = ', ')}...")
 
 conids <- tryCatch({
   ids <- ibkr_get_conids(etf_symbols_ibkr)
@@ -167,9 +192,9 @@ conids <- tryCatch({
   stop(e)
 })
 
-# Step 3: Fetch and merge price history per ETF --------------------------------
+## Step 4: Fetch and merge price history per ETF --------------------------
 
-log_info("Step 3: Fetching and merging price history...")
+log_info("Step 4: Fetching and merging price history...")
 
 dir.create(prices_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -192,8 +217,8 @@ for (symbol in etf_symbols) {
       NULL
     }
 
-    # Merge new rows
-    updated_df <- merge_price_history(symbol, conid, base_df)
+    # Merge new rows — pass non_trading_dates for accurate gap validation
+    updated_df <- merge_price_history(symbol, conid, base_df, non_trading_dates)
 
     # Save if updated
     if (!is.null(updated_df)) {
@@ -209,9 +234,9 @@ for (symbol in etf_symbols) {
   })
 }
 
-# Step 4: Summary --------------------------------------------------------------
+## Step 5: Summary --------------------------------------------------------
 
-log_info("Step 4: Summary")
+log_info("Step 5: Summary")
 
 for (symbol in etf_symbols) {
   hist_file <- file.path(prices_dir, paste0(symbol, ".rds"))
