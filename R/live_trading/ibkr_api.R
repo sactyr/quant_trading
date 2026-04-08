@@ -354,7 +354,7 @@ ibkr_get_price_history <- function(conid, period = "1y") {
 
   bars <- lapply(resp$data, function(bar) {
     data.frame(
-      date   = as.Date(as.POSIXct(bar$t / 1000, origin = "1970-01-01", tz = "Australia/Sydney")),
+      date   = as.Date(format(as.POSIXct(bar$t / 1000, origin = "1970-01-01", tz = "Australia/Sydney"), "%Y-%m-%d")),
       open   = bar$o,
       high   = bar$h,
       low    = bar$l,
