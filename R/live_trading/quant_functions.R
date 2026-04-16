@@ -277,7 +277,8 @@ price_df_to_xts <- function(price_df, symbol) {
 #' Generate today's trading signal for a single ETF
 #'
 #' Loads cumulative price history from disk (saved by quant_fetch_price_hist.R)
-#' and applies the ETF's assigned strategy to return today's signal.
+#' and applies the ETF's assigned strategy to return today's signal. Logs the
+#' indicator values and reasoning behind the signal for monitoring.
 #'
 #' @param symbol ETF symbol including .AX suffix (e.g. "VGS.AX")
 #' @param units_held Integer units currently held (used by buy_hold strategy)
@@ -293,7 +294,13 @@ generate_signal <- function(symbol, units_held = 0L) {
 
   # buy_hold: buy when not invested, hold when already invested
   if (strategy == "buy_hold") {
-    return(if (units_held > 0L) "hold" else "buy")
+    if (units_held > 0L) {
+      log_info("  Strategy: buy_hold — already in position ({units_held} units held)")
+      return("hold")
+    } else {
+      log_info("  Strategy: buy_hold — not yet invested, generating buy signal")
+      return("buy")
+    }
   }
 
   # Load cumulative price history from disk
@@ -315,11 +322,21 @@ generate_signal <- function(symbol, units_held = 0L) {
 
     "rsi" = {
       rsi_values <- TTR::RSI(price_df$close, n = rsi_n_period)
-      latest_rsi <- tail(rsi_values, 1)
-      if (is.na(latest_rsi))           "hold"
-      else if (latest_rsi < rsi_lower) "buy"
-      else if (latest_rsi > rsi_upper) "sell"
-      else                             "hold"
+      latest_rsi <- round(tail(rsi_values, 1), 2)
+
+      if (is.na(latest_rsi)) {
+        log_info("  RSI: NA — insufficient history for RSI calculation")
+        "hold"
+      } else if (latest_rsi < rsi_lower) {
+        log_info("  RSI: {latest_rsi} < oversold threshold {rsi_lower} — BUY signal")
+        "buy"
+      } else if (latest_rsi > rsi_upper) {
+        log_info("  RSI: {latest_rsi} > overbought threshold {rsi_upper} — SELL signal")
+        "sell"
+      } else {
+        log_info("  RSI: {latest_rsi} — between {rsi_lower} (oversold) and {rsi_upper} (overbought), no signal")
+        "hold"
+      }
     },
 
     {
@@ -334,6 +351,48 @@ generate_signal <- function(symbol, units_held = 0L) {
         roll_window       = macd_vol_rolling_window,
         strength_quantile = macd_vol_quantile
       )
+
+      # Extract indicator values for logging
+      n          <- nrow(result)
+      curr_hist  <- round(result$hist[n], 2)
+      prev_hist  <- round(result$hist[n - 1], 2)
+      abs_hist   <- abs(curr_hist)
+      threshold  <- round(
+        quantile(abs(tail(result$hist, macd_vol_rolling_window)), macd_vol_quantile, na.rm = TRUE),
+        2
+      )
+
+      crossover_up   <- !is.na(prev_hist) & prev_hist <= 0 & curr_hist > 0
+      crossover_down <- !is.na(prev_hist) & prev_hist >= 0 & curr_hist < 0
+      above_thresh   <- !is.na(threshold) & abs_hist >= threshold
+
+      # Crossover reason
+      crossover_msg <- if (crossover_up) {
+        sprintf("YES — histogram crossed negative to positive (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+      } else if (crossover_down) {
+        sprintf("YES — histogram crossed positive to negative (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+      } else if (curr_hist > 0) {
+        sprintf("NO  — histogram already positive, no fresh crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+      } else {
+        sprintf("NO  — histogram still negative, no crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+      }
+
+      # Threshold reason
+      thresh_msg <- if (is.na(threshold)) {
+        sprintf("NO  — threshold not yet available (need %d bars)", macd_vol_rolling_window)
+      } else {
+        sprintf(
+          "%s — abs(hist)=%.2f %s %.0f%% threshold=%.2f",
+          ifelse(above_thresh, "YES", "NO "),
+          abs_hist,
+          ifelse(above_thresh, ">=", "<"),
+          macd_vol_quantile * 100,
+          threshold
+        )
+      }
+
+      log_info("  Crossover: {crossover_msg}")
+      log_info("  Threshold: {thresh_msg}")
 
       latest_signal <- tail(result$trade_signal, 1)
 
