@@ -29,6 +29,7 @@ Sys.setenv(TZ = "Australia/Sydney")
 source(here("R", "live_trading", "ibkr_api.R"))
 source(here("R", "quant_vars.R"))
 source(here("R", "live_trading", "quant_functions.R"))
+source(here("R", "live_trading", "quant_alerts.R"))
 
 # Logging setup ----------------------------------------------------------------
 
@@ -48,6 +49,10 @@ log_info("Account: {ibkr_account_id}")
 log_info("ETF universe: {paste(etf_symbols, collapse = ', ')}")
 log_info("Total capital (fallback): ${total_capital}")
 log_info("=============================================================")
+
+# Top-level error handler — sends email alert on any unhandled failure ---------
+
+tryCatch({
 
 # Step 1: Confirm IBKR session -------------------------------------------------
 
@@ -311,3 +316,16 @@ log_info("State saved.")
 log_info("=============================================================")
 log_info("quant_trader.R completed — {Sys.time()}")
 log_info("=============================================================")
+
+}, error = function(e) {
+  log_error("quant_trader.R failed: {e$message}")
+  send_alert(
+    subject = sprintf("[QUANT TRADER] FAILED — %s", Sys.Date()),
+    body    = paste0(
+      "quant_trader.R failed on ", Sys.Date(), " at ", format(Sys.time()), ".\n\n",
+      "Error:\n", e$message, "\n\n",
+      "Check logs at: ", log_file
+    )
+  )
+  stop(e)
+})

@@ -34,6 +34,7 @@ Sys.setenv(TZ = "Australia/Sydney")
 
 source(here("R", "quant_vars.R"))
 source(here("R", "live_trading", "ibkr_api.R"))
+source(here("R", "live_trading", "quant_alerts.R"))
 
 
 # Logging setup -----------------------------------------------------------
@@ -55,7 +56,7 @@ log_layout(layout_glue_generator(
 
 #' Compute MD5 hash for a price history row
 #'
-#' Concatenates date+OHLC fields (excluding volume and dttm_updated)into a 
+#' Concatenates date+OHLC fields (excluding volume and dttm_updated) into a
 #' single string and computes its MD5 hash. Volume is excluded because
 #' IBKR occasionally revises volume slightly between fetches for the same bar.
 #' Used for deduplication when merging new rows into the cumulative history.
@@ -137,6 +138,10 @@ log_info("=============================================================")
 log_info("quant_fetch_price_hist.R started — {Sys.time()}")
 log_info("ETF universe: {paste(etf_symbols, collapse = ', ')}")
 log_info("=============================================================")
+
+# Top-level error handler — sends email alert on any unhandled failure ---------
+
+tryCatch({
 
 ## Step 1: Authenticate with IBKR -----------------------------------------
 
@@ -251,3 +256,16 @@ for (symbol in etf_symbols) {
 log_info("=============================================================")
 log_success("quant_fetch_price_hist.R completed — {Sys.time()}")
 log_info("=============================================================")
+
+}, error = function(e) {
+  log_error("quant_fetch_price_hist.R failed: {e$message}")
+  send_alert(
+    subject = sprintf("[PRICE FETCH] FAILED — %s", Sys.Date()),
+    body    = paste0(
+      "quant_fetch_price_hist.R failed on ", Sys.Date(), " at ", format(Sys.time()), ".\n\n",
+      "Error:\n", e$message, "\n\n",
+      "Check logs at: ", log_file
+    )
+  )
+  stop(e)
+})
