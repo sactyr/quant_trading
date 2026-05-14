@@ -36,45 +36,99 @@ source(file.path(project_root, "R", "backtesting", "quant_backtesting_functions.
 #'
 #' @return A layout_glue_generator object that formats log messages as:
 #'   `[YYYY-MM-DD HH:MM:SS] | LEVEL   | message`
-#' @examples
-#' \dontrun{
-#' log_layout(get_log_layout())
-#' # [2026-03-15 10:00:01] | INFO    | Starting process
-#' # [2026-03-15 10:00:02] | SUCCESS | Process complete
-#' }
 get_log_layout <- function() {
   layout_glue_generator(
     format = '[{format(time, "%Y-%m-%d %H:%M:%S")}] | {toupper(sprintf("%-7s", level))} | {msg}'
   )
 }
 
+# IBKR domain helpers ----------------------------------------------------------
+# These functions wrap ibkrcp primitives with ASX-specific logic.
+# They live here (trading layer) rather than in ibkrcp (generic API wrapper).
+
+#' Resolve IBKR conids for a vector of ASX symbols
+#'
+#' Calls ibkr_search_contracts() for each symbol and filters results to
+#' ASX-listed contracts only.
+#'
+#' @param symbols Character vector of ticker symbols without .AX suffix
+#'   (e.g. c("VGS", "VAS", "GOLD"))
+#' @return Named integer vector of conids, named by symbol
+ibkr_get_conids <- function(symbols) {
+  conids <- vapply(symbols, function(sym) {
+    resp <- ibkr_search_contracts(sym, sec_type = "STK")
+    
+    asx_matches <- Filter(function(x) {
+      grepl("ASX", x$description, ignore.case = TRUE) ||
+        grepl("ASX", x$companyHeader, ignore.case = TRUE)
+    }, resp)
+    
+    if (length(asx_matches) == 0) {
+      stop(sprintf(
+        "No ASX-listed contract found for symbol: %s. Check the symbol or inspect the secdef/search endpoint manually.",
+        sym
+      ))
+    }
+    
+    as.integer(asx_matches[[1]]$conid)
+  }, integer(1))
+  
+  message(sprintf(
+    "Resolved conids: %s",
+    paste(names(conids), conids, sep = "=", collapse = ", ")
+  ))
+  
+  conids
+}
+
+#' Get upcoming ASX non-trading dates from IBKR schedule endpoint
+#'
+#' Calls ibkr_get_trading_schedule() and extracts dates where ASX has no
+#' trading sessions (public holidays).
+#'
+#' @param symbol Character. ASX symbol to query schedule for (default "VGS")
+#' @return Character vector of non-trading dates in "YYYY-MM-DD" format
+ibkr_get_non_trading_dates <- function(symbol = "VGS") {
+  resp <- ibkr_get_trading_schedule(symbol, exchange = "ASX", asset_class = "STK")
+  
+  if (length(resp) == 0) return(character(0))
+  
+  # Use the ASX exchange entry
+  asx <- Filter(function(x) x$exchange == "ASX", resp)
+  if (length(asx) == 0) asx <- resp[1]
+  
+  schedules <- asx[[1]]$schedules
+  
+  # Extract non-trading dates — sessions is empty and date is not a template date
+  # Template dates use year 2000 (20000101-20000107), skip those
+  non_trading <- Filter(function(s) {
+    date_str     <- as.character(s$tradingScheduleDate)
+    is_real_date <- !startsWith(date_str, "2000")
+    has_no_sessions <- length(s$sessions) == 0
+    is_real_date && has_no_sessions
+  }, schedules)
+  
+  dates <- sapply(non_trading, function(s) {
+    d <- as.character(s$tradingScheduleDate)
+    format(as.Date(d, "%Y%m%d"), "%Y-%m-%d")
+  })
+  
+  as.character(dates)
+}
+
 # State management -------------------------------------------------------------
 
 #' Initialise or load the trading state file
 #'
-#' The state file tracks units held and cash available per ETF bucket across
-#' daily runs. On first run (no state file exists), initialises buckets by
-#' splitting total available cash from IBKR according to etf_splits, and
-#' cross-checks IBKR positions to correctly set units_held for any existing
-#' positions. Falls back to total_capital from quant_vars.R if IBKR cash
-#' is unavailable.
-#'
-#' State structure (one row per ETF):
-#'   symbol  | units_held | cash_available | last_updated
-#'   VGS.AX  | 3947       | 65.16          | 2026-03-27
-#'   VAS.AX  | 0          | 300000.00      | 2026-03-27
-#'   GOLD.AX | 0          | 140000.00      | 2026-03-27
-#'
 #' @param ibkr_cash Total cash available from IBKR account summary (AUD).
 #'   If NULL or NA, falls back to total_capital from quant_vars.R.
 #' @param ibkr_positions Data frame of current IBKR positions as returned by
-#'   ibkr_get_positions(). Used on first run to correctly initialise units_held
-#'   and adjust cash buckets for existing positions. Pass NULL to skip.
+#'   ibkr_portfolio_positions(). Used on first run to correctly initialise
+#'   units_held and adjust cash buckets for existing positions. Pass NULL to skip.
 #' @return Data frame representing current state
 load_state <- function(ibkr_cash = NULL, ibkr_positions = NULL) {
   if (!file.exists(state_file)) {
-
-    # Determine starting capital
+    
     if (!is.null(ibkr_cash) && !is.na(ibkr_cash) && ibkr_cash > 0) {
       starting_capital <- ibkr_cash
       message(sprintf(
@@ -88,9 +142,7 @@ load_state <- function(ibkr_cash = NULL, ibkr_positions = NULL) {
         starting_capital
       ))
     }
-
-    # Total portfolio value = cash + position values
-    # Estimate total value to derive correct bucket splits
+    
     total_position_value <- 0
     if (!is.null(ibkr_positions) && nrow(ibkr_positions) > 0) {
       for (i in seq_len(nrow(ibkr_positions))) {
@@ -99,10 +151,8 @@ load_state <- function(ibkr_cash = NULL, ibkr_positions = NULL) {
       }
     }
     total_value <- starting_capital + total_position_value
-
-    buckets <- round(total_value * etf_splits, 2)
-
-    # Initialise state with zero units
+    buckets     <- round(total_value * etf_splits, 2)
+    
     state <- data.frame(
       symbol         = etf_symbols,
       units_held     = 0L,
@@ -110,36 +160,33 @@ load_state <- function(ibkr_cash = NULL, ibkr_positions = NULL) {
       last_updated   = as.character(Sys.Date()),
       stringsAsFactors = FALSE
     )
-
-    # Cross-check IBKR positions — set units_held and adjust cash for held positions
+    
     if (!is.null(ibkr_positions) && nrow(ibkr_positions) > 0) {
       for (i in seq_len(nrow(ibkr_positions))) {
         ibkr_sym <- ibkr_positions$symbol[i]
-        # Match IBKR symbol (e.g. "VGS") to etf_symbols (e.g. "VGS.AX")
         matched  <- etf_symbols[grepl(paste0("^", ibkr_sym, "\\."), etf_symbols)]
         if (length(matched) == 0) next
-
+        
         units    <- as.integer(ibkr_positions$position[i])
         avg_cost <- ibkr_positions$avg_cost[i]
         cost     <- units * avg_cost
         fee      <- max(ibkr_min_fee, cost * ibkr_fee_rate)
-
+        
         idx <- which(state$symbol == matched)
         state$units_held[idx]     <- units
-        # Deduct cost + fee from bucket cash
         state$cash_available[idx] <- round(state$cash_available[idx] - cost - fee, 2)
-
+        
         message(sprintf(
           "Cross-check: %s — found %d units @ avg cost $%.2f, deducting $%.2f from bucket.",
           matched, units, avg_cost, cost + fee
         ))
       }
     }
-
+    
     save_state(state)
     return(state)
   }
-
+  
   readRDS(state_file)
 }
 
@@ -162,36 +209,50 @@ save_state <- function(state) {
 #' @return Updated state data frame
 update_state <- function(state, symbol, units_delta, cash_delta) {
   idx <- which(state$symbol == symbol)
-
-  if (length(idx) == 0) {
-    stop(sprintf("Symbol %s not found in state.", symbol))
-  }
-
+  
+  if (length(idx) == 0) stop(sprintf("Symbol %s not found in state.", symbol))
+  
   state$units_held[idx]     <- state$units_held[idx] + units_delta
   state$cash_available[idx] <- state$cash_available[idx] + cash_delta
-
-  if (state$units_held[idx] < 0) {
+  
+  if (state$units_held[idx] < 0)
     stop(sprintf("units_held for %s has gone negative — something is wrong.", symbol))
-  }
-  if (state$cash_available[idx] < 0) {
+  if (state$cash_available[idx] < 0)
     stop(sprintf("cash_available for %s has gone negative — something is wrong.", symbol))
-  }
-
+  
   state
+}
+
+#' Get the most recent trading day before a given date
+#'
+#' @param date Date to step back from (default: today)
+#' @param non_trading_dates Character vector of non-trading dates in "YYYY-MM-DD" format
+#' @return Date of the most recent trading day before the given date
+last_trading_day <- function(date = Sys.Date(), non_trading_dates = character(0)) {
+  d         <- as.Date(date) - 1
+  max_steps <- 10
+  steps     <- 0
+  while (steps < max_steps) {
+    day_of_week <- weekdays(d)
+    is_weekend  <- day_of_week %in% c("Saturday", "Sunday")
+    is_holiday  <- format(d, "%Y-%m-%d") %in% non_trading_dates
+    if (!is_weekend && !is_holiday) return(d)
+    d     <- d - 1
+    steps <- steps + 1
+  }
+  d
 }
 
 # Trade logging ----------------------------------------------------------------
 
 #' Append a trade record to the trade log CSV
 #'
-#' Creates the log file with a header if it does not exist.
-#'
 #' @param symbol ETF symbol
 #' @param side "BUY" or "SELL"
 #' @param units Number of shares traded
 #' @param price Execution price per share (AUD)
 #' @param fee Estimated fee (AUD)
-#' @param signal Signal that triggered the trade (e.g. "rsi_buy", "stop_loss")
+#' @param signal Signal that triggered the trade
 log_trade <- function(symbol, side, units, price, fee, signal) {
   record <- data.frame(
     date      = as.character(Sys.Date()),
@@ -205,16 +266,16 @@ log_trade <- function(symbol, side, units, price, fee, signal) {
     signal    = signal,
     stringsAsFactors = FALSE
   )
-
+  
   dir.create(dirname(trade_log_file), showWarnings = FALSE, recursive = TRUE)
-
+  
   write_csv(
     record,
     trade_log_file,
     append    = file.exists(trade_log_file),
     col_names = !file.exists(trade_log_file)
   )
-
+  
   message(sprintf(
     "Trade logged: %s %s %d @ $%.2f (fee $%.2f, signal: %s)",
     side, symbol, units, price, fee, signal
@@ -235,23 +296,20 @@ estimate_fee <- function(trade_value) {
 
 #' Calculate the number of shares to buy given available cash
 #'
-#' Accounts for brokerage fees so the total cost (shares + fee) does not
-#' exceed available cash.
-#'
 #' @param cash_available Cash available in the bucket (AUD)
 #' @param price Current price per share (AUD)
 #' @return Integer number of shares to buy (0 if even 1 share is unaffordable)
 calculate_buy_units <- function(cash_available, price) {
   if (price <= 0) stop("price must be positive")
-
+  
   max_units <- floor(cash_available / price)
   if (max_units == 0) return(0L)
-
+  
   for (n in max_units:1) {
     total_cost <- n * price + estimate_fee(n * price)
     if (total_cost <= cash_available) return(as.integer(n))
   }
-
+  
   0L
 }
 
@@ -259,11 +317,8 @@ calculate_buy_units <- function(cash_available, price) {
 
 #' Convert price history data frame to xts object for strategy functions
 #'
-#' Converts the data frame returned by ibkr_get_price_history() into an xts
-#' object with column names compatible with quantmod/TTR functions (HLC, Ad).
-#'
 #' @param price_df Data frame with columns: date, open, high, low, close, volume
-#' @param symbol ETF symbol including .AX suffix (used for column naming)
+#' @param symbol ETF symbol including .AX suffix
 #' @return xts object with OHLCV columns in quantmod format
 price_df_to_xts <- function(price_df, symbol) {
   xts_obj <- xts::xts(
@@ -276,23 +331,18 @@ price_df_to_xts <- function(price_df, symbol) {
 
 #' Generate today's trading signal for a single ETF
 #'
-#' Loads cumulative price history from disk (saved by quant_fetch_price_hist.R)
-#' and applies the ETF's assigned strategy to return today's signal. Logs the
-#' indicator values and reasoning behind the signal for monitoring.
-#'
 #' @param symbol ETF symbol including .AX suffix (e.g. "VGS.AX")
 #' @param units_held Integer units currently held (used by buy_hold strategy)
 #' @return Character string: "buy", "sell", or "hold"
 generate_signal <- function(symbol, units_held = 0L) {
   strategy_config <- etf_strategies[[symbol]]
-
+  
   if (is.null(strategy_config)) {
     stop(sprintf("No strategy configured for symbol: %s", symbol))
   }
-
+  
   strategy <- strategy_config$strategy
-
-  # buy_hold: buy when not invested, hold when already invested
+  
   if (strategy == "buy_hold") {
     if (units_held > 0L) {
       log_info("  Strategy: buy_hold — already in position ({units_held} units held)")
@@ -302,8 +352,7 @@ generate_signal <- function(symbol, units_held = 0L) {
       return("buy")
     }
   }
-
-  # Load cumulative price history from disk
+  
   hist_file <- file.path(prices_dir, paste0(symbol, ".rds"))
   if (!file.exists(hist_file)) {
     stop(sprintf(
@@ -311,103 +360,98 @@ generate_signal <- function(symbol, units_held = 0L) {
       symbol, hist_file
     ))
   }
-
+  
   price_df <- readRDS(hist_file)
-
+  
   if (nrow(price_df) < 50) {
     stop(sprintf("Insufficient price history for %s (%d bars).", symbol, nrow(price_df)))
   }
-
+  
   signal <- switch(strategy,
-
-    "rsi" = {
-      rsi_values <- TTR::RSI(price_df$close, n = rsi_n_period)
-      latest_rsi <- round(tail(rsi_values, 1), 2)
-
-      if (is.na(latest_rsi)) {
-        log_info("  RSI: NA — insufficient history for RSI calculation")
-        "hold"
-      } else if (latest_rsi < rsi_lower) {
-        log_info("  RSI: {latest_rsi} < oversold threshold {rsi_lower} — BUY signal")
-        "buy"
-      } else if (latest_rsi > rsi_upper) {
-        log_info("  RSI: {latest_rsi} > overbought threshold {rsi_upper} — SELL signal")
-        "sell"
-      } else {
-        log_info("  RSI: {latest_rsi} — between {rsi_lower} (oversold) and {rsi_upper} (overbought), no signal")
-        "hold"
-      }
-    },
-
-    {
-      if (!grepl("macd_vol_dynamic", strategy)) {
-        stop(sprintf("Unrecognised strategy '%s' for symbol %s", strategy, symbol))
-      }
-
-      prices_xts <- price_df_to_xts(price_df, symbol)
-
-      result <- strat_macdv_dynamic_strength(
-        prices_xts        = prices_xts,
-        roll_window       = macd_vol_rolling_window,
-        strength_quantile = macd_vol_quantile
-      )
-
-      # Extract indicator values for logging
-      n          <- nrow(result)
-      curr_hist  <- round(result$hist[n], 2)
-      prev_hist  <- round(result$hist[n - 1], 2)
-      abs_hist   <- abs(curr_hist)
-      threshold  <- round(
-        quantile(abs(tail(result$hist, macd_vol_rolling_window)), macd_vol_quantile, na.rm = TRUE),
-        2
-      )
-
-      crossover_up   <- !is.na(prev_hist) & prev_hist <= 0 & curr_hist > 0
-      crossover_down <- !is.na(prev_hist) & prev_hist >= 0 & curr_hist < 0
-      above_thresh   <- !is.na(threshold) & abs_hist >= threshold
-
-      # Crossover reason
-      crossover_msg <- if (crossover_up) {
-        sprintf("YES — histogram crossed negative to positive (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-      } else if (crossover_down) {
-        sprintf("YES — histogram crossed positive to negative (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-      } else if (curr_hist > 0) {
-        sprintf("NO  — histogram already positive, no fresh crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-      } else {
-        sprintf("NO  — histogram still negative, no crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-      }
-
-      # Threshold reason
-      thresh_msg <- if (is.na(threshold)) {
-        sprintf("NO  — threshold not yet available (need %d bars)", macd_vol_rolling_window)
-      } else {
-        sprintf(
-          "%s — abs(hist)=%.2f %s %.0f%% threshold=%.2f",
-          ifelse(above_thresh, "YES", "NO "),
-          abs_hist,
-          ifelse(above_thresh, ">=", "<"),
-          macd_vol_quantile * 100,
-          threshold
-        )
-      }
-
-      log_info("  Crossover: {crossover_msg}")
-      log_info("  Threshold: {thresh_msg}")
-
-      latest_signal <- tail(result$trade_signal, 1)
-
-      if (is.na(latest_signal) || latest_signal == 0L) "hold"
-      else if (latest_signal == 1L)                    "buy"
-      else                                             "sell"
-    }
+                   
+                   "rsi" = {
+                     rsi_values <- TTR::RSI(price_df$close, n = rsi_n_period)
+                     latest_rsi <- round(tail(rsi_values, 1), 2)
+                     
+                     if (is.na(latest_rsi)) {
+                       log_info("  RSI: NA — insufficient history for RSI calculation")
+                       "hold"
+                     } else if (latest_rsi < rsi_lower) {
+                       log_info("  RSI: {latest_rsi} < oversold threshold {rsi_lower} — BUY signal")
+                       "buy"
+                     } else if (latest_rsi > rsi_upper) {
+                       log_info("  RSI: {latest_rsi} > overbought threshold {rsi_upper} — SELL signal")
+                       "sell"
+                     } else {
+                       log_info("  RSI: {latest_rsi} — between {rsi_lower} (oversold) and {rsi_upper} (overbought), no signal")
+                       "hold"
+                     }
+                   },
+                   
+                   {
+                     if (!grepl("macd_vol_dynamic", strategy)) {
+                       stop(sprintf("Unrecognised strategy '%s' for symbol %s", strategy, symbol))
+                     }
+                     
+                     prices_xts <- price_df_to_xts(price_df, symbol)
+                     
+                     result <- strat_macdv_dynamic_strength(
+                       prices_xts        = prices_xts,
+                       roll_window       = macd_vol_rolling_window,
+                       strength_quantile = macd_vol_quantile
+                     )
+                     
+                     n         <- nrow(result)
+                     curr_hist <- round(result$hist[n], 2)
+                     prev_hist <- round(result$hist[n - 1], 2)
+                     abs_hist  <- abs(curr_hist)
+                     threshold <- round(
+                       quantile(abs(tail(result$hist, macd_vol_rolling_window)), macd_vol_quantile, na.rm = TRUE),
+                       2
+                     )
+                     
+                     crossover_up   <- !is.na(prev_hist) & prev_hist <= 0 & curr_hist > 0
+                     crossover_down <- !is.na(prev_hist) & prev_hist >= 0 & curr_hist < 0
+                     above_thresh   <- !is.na(threshold) & abs_hist >= threshold
+                     
+                     crossover_msg <- if (crossover_up) {
+                       sprintf("YES — histogram crossed negative to positive (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                     } else if (crossover_down) {
+                       sprintf("YES — histogram crossed positive to negative (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                     } else if (curr_hist > 0) {
+                       sprintf("NO  — histogram already positive, no fresh crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                     } else {
+                       sprintf("NO  — histogram still negative, no crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                     }
+                     
+                     thresh_msg <- if (is.na(threshold)) {
+                       sprintf("NO  — threshold not yet available (need %d bars)", macd_vol_rolling_window)
+                     } else {
+                       sprintf(
+                         "%s — abs(hist)=%.2f %s %.0f%% threshold=%.2f",
+                         ifelse(above_thresh, "YES", "NO "),
+                         abs_hist,
+                         ifelse(above_thresh, ">=", "<"),
+                         macd_vol_quantile * 100,
+                         threshold
+                       )
+                     }
+                     
+                     log_info("  Crossover: {crossover_msg}")
+                     log_info("  Threshold: {thresh_msg}")
+                     
+                     latest_signal <- tail(result$trade_signal, 1)
+                     
+                     if (is.na(latest_signal) || latest_signal == 0L) "hold"
+                     else if (latest_signal == 1L)                    "buy"
+                     else                                             "sell"
+                   }
   )
-
+  
   signal
 }
 
 #' Check whether stop loss has been triggered for a held position
-#'
-#' Compares current price against the average cost from IBKR positions.
 #'
 #' @param symbol ETF symbol
 #' @param current_price Current market price (AUD)
@@ -415,18 +459,18 @@ generate_signal <- function(symbol, units_held = 0L) {
 #' @param stop_loss_pct Stop loss threshold as a decimal (e.g. 0.10 for 10%)
 #' @return TRUE if stop loss triggered, FALSE otherwise
 is_stop_loss_triggered <- function(symbol, current_price, avg_cost, stop_loss_pct) {
-  if (stop_loss_pct == 0)            return(FALSE)
+  if (stop_loss_pct == 0)               return(FALSE)
   if (is.na(avg_cost) || avg_cost <= 0) return(FALSE)
-
+  
   drawdown  <- (current_price - avg_cost) / avg_cost
   triggered <- drawdown <= -stop_loss_pct
-
+  
   if (triggered) {
     message(sprintf(
       "Stop loss triggered for %s: current $%.2f vs avg cost $%.2f (%.1f%% drawdown vs %.0f%% threshold)",
       symbol, current_price, avg_cost, drawdown * 100, stop_loss_pct * 100
     ))
   }
-
+  
   triggered
 }

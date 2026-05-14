@@ -1,4 +1,4 @@
-# =============================================================================
+
 # ibkr_api.R
 # IBKR Client Portal REST API wrapper (proto-package)
 #
@@ -16,10 +16,9 @@
 #   - All requests disable SSL verification (gateway uses a self-signed cert).
 #   - Call ibkr_tickle() at the start of each trading session to confirm the
 #     session is alive. Sessions time out after ~5 minutes without a request.
-#   - conids (IBKR contract IDs) are resolved dynamically via ibkr_get_conids().
+#   - conids (IBKR contract IDs) are resolved via ibkr_search_contracts().
 #   - ibkr_get_price_history() returns daily OHLCV bars and is the sole price
 #     data source for both signal generation and order sizing in live trading.
-# =============================================================================
 
 library(httr2)
 library(jsonlite)
@@ -169,12 +168,26 @@ ibkr_reauthenticate <- function() {
 
 # Account ----------------------------------------------------------------------
 
-#' Get all accounts associated with the authenticated user
+#' Search for contracts by symbol
 #'
-#' @return Data frame with account details (accountId, type, currency, etc.)
-ibkr_get_accounts <- function() {
-  resp <- ibkr_get("/portfolio/accounts")
-  do.call(rbind, lapply(resp, as.data.frame, stringsAsFactors = FALSE))
+#' Queries the IBKR secdef search endpoint and returns all matching contracts
+#' for a given symbol and security type.
+#'
+#' @param symbol Character. Ticker symbol (e.g. "VGS")
+#' @param sec_type Character. Security type (default "STK")
+#' @return List of matching contract objects as returned by IBKR. Stops with an
+#'   error if no contracts are found.
+ibkr_search_contracts <- function(symbol, sec_type = "STK") {
+  resp <- ibkr_post("/iserver/secdef/search", body = list(
+    symbol  = symbol,
+    secType = sec_type
+  ))
+  
+  if (length(resp) == 0) {
+    stop(sprintf("No contracts found for symbol: %s", symbol))
+  }
+  
+  resp
 }
 
 #' Get portfolio summary (cash balances etc.) for an account
@@ -217,117 +230,32 @@ ibkr_get_positions <- function(account_id) {
 
 # Market data ------------------------------------------------------------------
 
-#' Look up conids (IBKR contract IDs) for a vector of ASX ticker symbols
+
+#' Get the trading schedule for a contract
 #'
-#' Conids are IBKR's internal instrument identifiers, required for market data
-#' and order placement. This function queries the search endpoint dynamically.
+#' Queries the IBKR trading schedule endpoint and returns the raw response.
 #'
-#' @param symbols Character vector of ASX ticker symbols without the .AX suffix
-#'   (e.g. c("VGS", "VAS", "GOLD"))
-#' @return Named integer vector of conids, named by symbol. Stops with an error
-#'   if any symbol cannot be resolved.
-ibkr_get_conids <- function(symbols) {
-  conids <- vapply(symbols, function(sym) {
-    resp <- ibkr_get("/iserver/secdef/search", params = list(
-      symbol  = sym,
-      secType = "STK"
-    ))
-
-    if (length(resp) == 0) {
-      stop(sprintf("Could not resolve conid for symbol: %s", sym))
-    }
-
-    asx_matches <- Filter(function(x) {
-      grepl("ASX", x$description, ignore.case = TRUE) ||
-      grepl("ASX", x$companyHeader, ignore.case = TRUE)
-    }, resp)
-
-    if (length(asx_matches) == 0) {
-      stop(sprintf(
-        "No ASX-listed contract found for symbol: %s. Check the symbol or inspect the secdef/search endpoint manually.",
-        sym
-      ))
-    }
-
-    as.integer(asx_matches[[1]]$conid)
-  }, integer(1))
-
-  message(sprintf(
-    "Resolved conids: %s",
-    paste(names(conids), conids, sep = "=", collapse = ", ")
-  ))
-
-  conids
-}
-
-#' Get upcoming ASX non-trading dates from IBKR schedule endpoint
-#'
-#' Queries the IBKR trading schedule for ASX and returns a vector of upcoming
-#' dates where the exchange is closed (public holidays, weekends excluded).
-#' Used by quant_trader.R to determine the most recent valid trading day
-#' for the price history staleness check.
-#'
-#' @param symbol ASX ticker symbol without .AX suffix (default: "VGS")
-#' @return Character vector of non-trading dates in "YYYY-MM-DD" format,
-#'   excluding dates from the weekly template (year 2000)
-ibkr_get_non_trading_dates <- function(symbol = "VGS") {
+#' @param symbol Character. Ticker symbol (e.g. "VGS")
+#' @param exchange Character. Exchange code (e.g. "ASX", "NYSE")
+#' @param asset_class Character. Asset class (default "STK")
+#' @return Raw response list as returned by IBKR. Stops with an error if no
+#'   schedule is returned.
+ibkr_get_trading_schedule <- function(symbol, exchange, asset_class = "STK") {
   resp <- ibkr_get("/trsrv/secdef/schedule", params = list(
-    assetClass = "STK",
+    assetClass = asset_class,
     symbol     = symbol,
-    exchange   = "ASX"
+    exchange   = exchange
   ))
-
-  if (length(resp) == 0) return(character(0))
-
-  # Use the first exchange entry (ASX)
-  asx <- Filter(function(x) x$exchange == "ASX", resp)
-  if (length(asx) == 0) asx <- resp[1]
-
-  schedules <- asx[[1]]$schedules
-
-  # Extract non-trading dates — sessions is empty and date is not a template date
-  # Template dates use year 2000 (20000101-20000107), skip those
-  non_trading <- Filter(function(s) {
-    date_str <- as.character(s$tradingScheduleDate)
-    is_real_date <- !startsWith(date_str, "2000")
-    has_no_sessions <- length(s$sessions) == 0
-    is_real_date && has_no_sessions
-  }, schedules)
-
-  dates <- sapply(non_trading, function(s) {
-    d <- as.character(s$tradingScheduleDate)
-    format(as.Date(d, "%Y%m%d"), "%Y-%m-%d")
-  })
-
-  as.character(dates)
-}
-
-#' Get the most recent ASX trading day before a given date
-#'
-#' Steps back from the given date, skipping weekends and known public holidays
-#' from the IBKR trading schedule. Used by quant_trader.R to determine the
-#' expected latest price date.
-#'
-#' @param date Date to step back from (default: today)
-#' @param non_trading_dates Character vector of non-trading dates in "YYYY-MM-DD"
-#'   format, as returned by ibkr_get_non_trading_dates()
-#' @return Date of the most recent trading day before the given date
-ibkr_last_trading_day <- function(date = Sys.Date(), non_trading_dates = character(0)) {
-  d <- as.Date(date) - 1
-  max_steps <- 10  # safety limit
-  steps <- 0
-  while (steps < max_steps) {
-    day_of_week <- weekdays(d)
-    is_weekend  <- day_of_week %in% c("Saturday", "Sunday")
-    is_holiday  <- format(d, "%Y-%m-%d") %in% non_trading_dates
-    if (!is_weekend && !is_holiday) return(d)
-    d <- d - 1
-    steps <- steps + 1
+  
+  if (length(resp) == 0) {
+    stop(sprintf("No trading schedule returned for symbol: %s on %s", symbol, exchange))
   }
-  d  # fallback
+  
+  resp
 }
 
 
+#' Get daily OHLCV price history for a contract
 #'
 #' Fetches daily OHLCV bars from IBKR for use in signal generation and order
 #' sizing. This is the sole price data source for live trading — Yahoo Finance
