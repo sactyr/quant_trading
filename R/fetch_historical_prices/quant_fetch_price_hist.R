@@ -39,9 +39,7 @@ log_file <- file.path(
 )
 
 log_appender(appender_tee(log_file))
-log_layout(layout_glue_generator(
-  format = '[{format(time, "%Y-%m-%d %H:%M:%S")}] | {toupper(sprintf("%-7s", level))} | {msg}'
-))
+log_layout(get_log_layout())
 
 # Helper functions -------------------------------------------------------------
 
