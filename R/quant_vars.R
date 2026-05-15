@@ -10,9 +10,10 @@
 #   - R/dashboard/quant_dashboard.R
 #
 # Setup:
-#   Add the following to your .Renviron file (run usethis::edit_r_environ()):
-#     IBKR_ACCOUNT_ID=U1234567
-#   Then restart R.
+#   On the VM: IBKR_ACCOUNT_ID is injected as an environment variable by
+#   start.sh and fetch_prices.sh via GCP Secret Manager at runtime.
+#   For local development only: add IBKR_ACCOUNT_ID=U1234567 to .Renviron
+#   (run usethis::edit_r_environ()) then restart R.
 # =============================================================================
 
 # IBKR connection --------------------------------------------------------------

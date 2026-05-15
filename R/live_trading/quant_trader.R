@@ -14,7 +14,8 @@
 #
 # Prerequisites:
 #   - Client Portal Gateway must be running and authenticated
-#   - IBKR_ACCOUNT_ID must be set in .Renviron
+#   - IBKR_ACCOUNT_ID is injected by start.sh via GCP Secret Manager (VM),
+#     or set in .Renviron for local development
 #   - quant_fetch_price_hist.R must have run at least once to create price files
 
 suppressPackageStartupMessages({
