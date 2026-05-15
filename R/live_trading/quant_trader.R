@@ -247,7 +247,7 @@ tryCatch({
       
       avg_cost <- NA
       if (nrow(ibkr_positions) > 0) {
-        match_row <- ibkr_positions[ibkr_positions$symbol == symbol, ]
+        match_row <- ibkr_positions[ibkr_positions$symbol == sub("\\.AX$", "", symbol), ]
         if (nrow(match_row) > 0) avg_cost <- match_row$avg_cost[1]
       }
       
