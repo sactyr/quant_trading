@@ -26,6 +26,132 @@ get_market_data <- function(
   
 }
 
+# 02 TAX FUNCTIONS --------------------------------------------------------
+
+#' apply_cgt
+#'
+#' @description
+#' Applies Australian CGT rules to a completed trades tibble from
+#' backtest_strategy(), returning post-tax final equity.
+#'
+#' Two regimes supported:
+#'   - "current":    50% discount on gains held >= 12 months, no discount
+#'                   for holds < 12 months. Taxed at marginal rate.
+#'   - "post_2027":  50% discount removed. Assets held >= 12 months benefit
+#'                   from CPI cost base indexation; assets held < 12 months
+#'                   are taxed in full at the marginal rate (same as current).
+#'                   A 30% minimum tax floor applies to the taxable gain
+#'                   (floors the effective rate on the real gain at 30%).
+#'
+#' Tax is applied at each sell event. Post-tax proceeds become the capital
+#' base for the next buy. Losses are carried forward and offset against
+#' future gains.
+#'
+#' @param trades tibble of trades from backtest_strategy()$trades
+#' @param initial_equity starting equity, used if trades is empty
+#' @param tax_regime "current" or "post_2027"
+#' @param marginal_rate marginal income tax rate, defaults to 0.37
+#' @param inflation_pa annual inflation rate for cost base indexation,
+#'   defaults to 0.03
+#'
+#' @returns scalar numeric — post-tax final equity
+
+apply_cgt <- function(
+    trades
+    ,initial_equity
+    ,tax_regime    = "current"
+    ,marginal_rate = 0.37
+    ,inflation_pa  = 0.03
+) {
+  
+  stopifnot(tax_regime %in% c("current", "post_2027"))
+  
+  # No trades — return initial equity untouched
+  if (nrow(trades) == 0) return(as.numeric(initial_equity))
+  
+  # Pair up BUY and SELL rows into complete round trips
+  pairs <- trades %>%
+    mutate(pair_id = cumsum(action == "BUY")) %>%
+    group_by(pair_id) %>%
+    filter(n() == 2) %>%
+    summarise(
+      buy_date   = first(date)
+      ,sell_date = last(date)
+      ,buy_price  = first(price)
+      ,sell_price = last(price)
+      ,units      = first(units)
+      ,buy_fee    = first(fee)
+      ,sell_fee   = last(fee)
+      ,.groups = "drop"
+    ) %>%
+    mutate(
+      hold_days   = as.numeric(difftime(sell_date, buy_date, units = "days"))
+      ,cost_base  = buy_price * units + buy_fee
+      ,proceeds   = sell_price * units - sell_fee
+      ,gross_gain = proceeds - cost_base
+    )
+  
+  # Apply CGT to each pair and accumulate post-tax equity
+  capital      <- as.numeric(initial_equity)
+  carried_loss <- 0
+  
+  for (i in seq_len(nrow(pairs))) {
+    
+    row        <- pairs[i, ]
+    gross_gain <- row$gross_gain
+    
+    # Offset carried forward losses first
+    net_gain     <- gross_gain + carried_loss  # carried_loss is negative
+    carried_loss <- 0
+    
+    if (net_gain <= 0) {
+      carried_loss <- net_gain
+      tax          <- 0
+    } else {
+      taxable_gain <- switch(tax_regime,
+                             
+                             "current" = {
+                               if (row$hold_days >= 365) {
+                                 net_gain * 0.50   # 50% discount for long-term holds
+                               } else {
+                                 net_gain          # Full gain taxable for short-term holds
+                               }
+                             },
+                             
+                             "post_2027" = {
+                               if (row$hold_days < 365) {
+                                 # SHORT-TERM: no indexation benefit, taxed in full
+                                 net_gain
+                               } else {
+                                 # LONG-TERM: CPI indexation reduces the taxable gain
+                                 hold_years    <- row$hold_days / 365
+                                 inflation_adj <- row$cost_base * inflation_pa * hold_years
+                                 max(0, net_gain - inflation_adj)
+                               }
+                             }
+      )
+      
+      # Apply marginal rate, subject to 30% minimum tax floor (post_2027 only)
+      # At marginal_rate = 0.37 the floor never binds, but it is correct
+      # for lower-bracket taxpayers and consistent with the policy.
+      tax <- if (tax_regime == "post_2027") {
+        max(taxable_gain * marginal_rate, taxable_gain * 0.30)
+      } else {
+        taxable_gain * marginal_rate
+      }
+    }
+    
+    capital <- row$proceeds - tax
+  }
+  
+  capital
+}
+
+
+# 03 SIMULATION FUNCTIONS -------------------------------------------------
+
+
+
 
 #' backtest_strategy
 #' 
@@ -273,11 +399,20 @@ backtest_strategy <- function(
 #' @param res A single backtest result object (a list) from `backtest_strategy()`
 #' containing `trades`, `equity_curve`, `final_equity`, and `parameters`.
 #' @param initial_equity The initial cash outlay used for the trading simulation.
-#'
+#' @param tax_regime CGT regime to apply: "current" or "post_2027"
+#' @param marginal_rate marginal income tax rate, defaults to 0.37
+#' @param inflation_pa annual inflation rate for cost base indexation, defaults to 0.03
+#' 
 #' @returns A single row tibble containing performance metrics for the given 
 #' backtest.
 
-calculate_summary_metrics_worker <- function(res, initial_equity) {
+calculate_summary_metrics_worker <- function(
+    res
+    ,initial_equity
+    ,tax_regime    = "current"
+    ,marginal_rate = 0.37
+    ,inflation_pa  = 0.03
+) {
   
   message("Running: ", res$strategy_nm)
   
@@ -287,7 +422,15 @@ calculate_summary_metrics_worker <- function(res, initial_equity) {
   stop_loss    <- res$parameters$stop_loss
   trades       <- res$trades
   equity_curve <- res$equity_curve
-  final_equity <- res$final_equity
+  
+  # Apply CGT to get post-tax final equity
+  final_equity <- apply_cgt(
+    trades          = trades
+    ,initial_equity = initial_equity
+    ,tax_regime     = tax_regime
+    ,marginal_rate  = marginal_rate
+    ,inflation_pa   = inflation_pa
+  )
   
   # Ensure initial_equity is numeric for calculation
   initial_equity <- as.numeric(initial_equity) 
@@ -402,18 +545,36 @@ calculate_summary_metrics_worker <- function(res, initial_equity) {
 #' strategies, with each row representing a unique strategy/window combination,
 #' identified by the `.id = "strategy"` column.
 
-get_performance_metrics <- function(results, initial_equity = 10000) {
+get_performance_metrics <- function(
+    results
+    ,initial_equity = 10000
+    ,tax_regime     = "current"
+    ,marginal_rate  = 0.37
+    ,inflation_pa   = 0.03
+) {
   
   furrr::future_map_dfr(
-    .x = results 
+    .x = results
     ,function(res) {
-      calculate_summary_metrics_worker(res = res, initial_equity = initial_equity)
+      calculate_summary_metrics_worker(
+        res             = res
+        ,initial_equity = initial_equity
+        ,tax_regime     = tax_regime
+        ,marginal_rate  = marginal_rate
+        ,inflation_pa   = inflation_pa
+      )
     }
     ,.id = "strategy"
     ,.progress = TRUE
-    ,.options = furrr_options(globals = c("initial_equity", "calculate_summary_metrics_worker")) 
+    ,.options = furrr_options(globals = c(
+      "initial_equity"
+      ,"tax_regime"
+      ,"marginal_rate"
+      ,"inflation_pa"
+      ,"calculate_summary_metrics_worker"
+      ,"apply_cgt"
+    ))
   )
-  
 }
 
 
@@ -470,7 +631,7 @@ sample_xts_window <- function(prices_xts, sample_size = 3, min_window_length = 2
 }
 
 
-# 02 TRADING STRATEGY FUNCTIONS -------------------------------------------
+# 04 TRADING STRATEGY FUNCTIONS -------------------------------------------
 
 #' strat_buy_hold
 #' 

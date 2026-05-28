@@ -4,23 +4,23 @@
 # Final universe — see decisions log for full instrument selection rationale
 etf_symbols <- c(
   "VGS.AX",   # Vanguard MSCI World ex-Australia — global developed markets
-  "VAS.AX",   # Vanguard Australian Shares — ASX 300
-  "GOLD.AX"   # Perth Mint Physical Gold — uncorrelated diversifier
+  "VVLU.AX"   # Vanguard Global Value Equity Active ETF — global value factor
 )
 
-# Capital split per ETF (CAPS-weighted — see Decision 9 in decisions log)
-# VGS: 0.507 / 0.904 = 56%, VAS: 0.275 / 0.904 = 30%, GOLD: 0.122 / 0.904 = 14%
+# Capital split per ETF — 60/40 VGS/VVLU (Decision 10, May 2026)
+# Optimised via portfolio-level CAPS sweep; 60/40 chosen over pure CAPS optimum
+# (10/90) to account for VVLU's shorter history (7yr) and active management risk
 etf_splits <- c(
-  VGS.AX  = 0.56,
-  VAS.AX  = 0.30,
-  GOLD.AX = 0.14
+  VGS.AX  = 0.60,
+  VVLU.AX = 0.40
 )
 
-# Best strategy per ETF (by CAPS from Monte Carlo — see decisions log)
+# Best strategy per ETF (by CAPS from Monte Carlo, post-2027 regime — see decisions log)
+# VGS:  macd_vol_fixed_20, SL5  — CAPS 0.467, geo_mean_CAGR 8.59%
+# VVLU: rsi, SL10             — CAPS 0.621, geo_mean_CAGR 9.04%
 etf_strategies <- list(
-  VGS.AX  = list(strategy = "buy_hold",                stop_loss = 0.00),
-  VAS.AX  = list(strategy = "macd_vol_dynamic_10_0.6", stop_loss = 0.10),
-  GOLD.AX = list(strategy = "rsi",                     stop_loss = 0.10)
+  VGS.AX  = list(strategy = "macd_vol_fixed_20", stop_loss = 0.05),
+  VVLU.AX = list(strategy = "rsi",               stop_loss = 0.10)
 )
 
 
@@ -39,3 +39,9 @@ stop_losses_pct <- paste0(stop_losses * 100, "%")
 # IBKR ASX ETF commission: max(AUD $6 flat, 0.08% of trade value)
 ibkr_min_fee  <- 6       # AUD minimum per trade
 ibkr_fee_rate <- 0.0008  # 0.08% of trade value
+
+
+# 04 TAX PARAMETERS -------------------------------------------------------
+marginal_tax_rate <- 0.37
+cgt_inflation_pa  <- 0.03
+tax_regimes       <- c("current", "post_2027")

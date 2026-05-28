@@ -389,62 +389,87 @@ generate_signal <- function(symbol, units_held = 0L) {
                    },
                    
                    {
-                     if (!grepl("macd_vol_dynamic", strategy)) {
-                       stop(sprintf("Unrecognised strategy '%s' for symbol %s", strategy, symbol))
-                     }
-                     
                      prices_xts <- price_df_to_xts(price_df, symbol)
                      
-                     result <- strat_macdv_dynamic_strength(
-                       prices_xts        = prices_xts,
-                       roll_window       = macd_vol_rolling_window,
-                       strength_quantile = macd_vol_quantile
-                     )
-                     
-                     n         <- nrow(result)
-                     curr_hist <- round(result$hist[n], 2)
-                     prev_hist <- round(result$hist[n - 1], 2)
-                     abs_hist  <- abs(curr_hist)
-                     threshold <- round(
-                       quantile(abs(tail(result$hist, macd_vol_rolling_window)), macd_vol_quantile, na.rm = TRUE),
-                       2
-                     )
-                     
-                     crossover_up   <- !is.na(prev_hist) & prev_hist <= 0 & curr_hist > 0
-                     crossover_down <- !is.na(prev_hist) & prev_hist >= 0 & curr_hist < 0
-                     above_thresh   <- !is.na(threshold) & abs_hist >= threshold
-                     
-                     crossover_msg <- if (crossover_up) {
-                       sprintf("YES — histogram crossed negative to positive (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-                     } else if (crossover_down) {
-                       sprintf("YES — histogram crossed positive to negative (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-                     } else if (curr_hist > 0) {
-                       sprintf("NO  — histogram already positive, no fresh crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-                     } else {
-                       sprintf("NO  — histogram still negative, no crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
-                     }
-                     
-                     thresh_msg <- if (is.na(threshold)) {
-                       sprintf("NO  — threshold not yet available (need %d bars)", macd_vol_rolling_window)
-                     } else {
-                       sprintf(
-                         "%s — abs(hist)=%.2f %s %.0f%% threshold=%.2f",
-                         ifelse(above_thresh, "YES", "NO "),
-                         abs_hist,
-                         ifelse(above_thresh, ">=", "<"),
-                         macd_vol_quantile * 100,
-                         threshold
+                     if (grepl("^macd_vol_fixed", strategy)) {
+                       # ── MACD-V fixed threshold ──────────────────────────────
+                       result <- strat_macdv(
+                         prices_xts          = prices_xts,
+                         strength_threshold  = macd_vol_fixed_threshold
                        )
+                       
+                       n         <- nrow(result)
+                       curr_hist <- round(result$hist[n], 2)
+                       threshold <- macd_vol_fixed_threshold
+                       
+                       buy_zone  <- curr_hist <= -threshold & curr_hist > (-3 * threshold)
+                       sell_zone <- curr_hist >=  threshold & curr_hist <  ( 3 * threshold)
+                       
+                       log_info(
+                         "  MACD-V fixed (threshold={threshold}): hist={curr_hist} | ",
+                         "buy_zone=[{-3*threshold},{-threshold}] sell_zone=[{threshold},{3*threshold}]"
+                       )
+                       
+                       if      (buy_zone)  "buy"
+                       else if (sell_zone) "sell"
+                       else                "hold"
+                       
+                     } else if (grepl("macd_vol_dynamic", strategy)) {
+                       # ── MACD-V dynamic threshold ────────────────────────────
+                       result <- strat_macdv_dynamic_strength(
+                         prices_xts        = prices_xts,
+                         roll_window       = macd_vol_rolling_window,
+                         strength_quantile = macd_vol_quantile
+                       )
+                       
+                       n         <- nrow(result)
+                       curr_hist <- round(result$hist[n], 2)
+                       prev_hist <- round(result$hist[n - 1], 2)
+                       abs_hist  <- abs(curr_hist)
+                       threshold <- round(
+                         quantile(abs(tail(result$hist, macd_vol_rolling_window)), macd_vol_quantile, na.rm = TRUE),
+                         2
+                       )
+                       
+                       crossover_up   <- !is.na(prev_hist) & prev_hist <= 0 & curr_hist > 0
+                       crossover_down <- !is.na(prev_hist) & prev_hist >= 0 & curr_hist < 0
+                       above_thresh   <- !is.na(threshold) & abs_hist >= threshold
+                       
+                       crossover_msg <- if (crossover_up) {
+                         sprintf("YES — histogram crossed negative to positive (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                       } else if (crossover_down) {
+                         sprintf("YES — histogram crossed positive to negative (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                       } else if (curr_hist > 0) {
+                         sprintf("NO  — histogram already positive, no fresh crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                       } else {
+                         sprintf("NO  — histogram still negative, no crossover (prev=%.2f, curr=%.2f)", prev_hist, curr_hist)
+                       }
+                       
+                       thresh_msg <- if (is.na(threshold)) {
+                         sprintf("NO  — threshold not yet available (need %d bars)", macd_vol_rolling_window)
+                       } else {
+                         sprintf(
+                           "%s — abs(hist)=%.2f %s %.0f%% threshold=%.2f",
+                           ifelse(above_thresh, "YES", "NO "),
+                           abs_hist,
+                           ifelse(above_thresh, ">=", "<"),
+                           macd_vol_quantile * 100,
+                           threshold
+                         )
+                       }
+                       
+                       log_info("  Crossover: {crossover_msg}")
+                       log_info("  Threshold: {thresh_msg}")
+                       
+                       latest_signal <- tail(result$trade_signal, 1)
+                       
+                       if (is.na(latest_signal) || latest_signal == 0L) "hold"
+                       else if (latest_signal == 1L)                    "buy"
+                       else                                             "sell"
+                       
+                     } else {
+                       stop(sprintf("Unrecognised strategy '%s' for symbol %s", strategy, symbol))
                      }
-                     
-                     log_info("  Crossover: {crossover_msg}")
-                     log_info("  Threshold: {thresh_msg}")
-                     
-                     latest_signal <- tail(result$trade_signal, 1)
-                     
-                     if (is.na(latest_signal) || latest_signal == 0L) "hold"
-                     else if (latest_signal == 1L)                    "buy"
-                     else                                             "sell"
                    }
   )
   

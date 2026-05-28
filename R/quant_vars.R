@@ -31,16 +31,18 @@ if (ibkr_account_id == "") {
 
 # ETF universe -----------------------------------------------------------------
 
-etf_symbols <- c("VGS.AX", "VAS.AX", "GOLD.AX")
+etf_symbols <- c("VGS.AX", "VVLU.AX")
 
 # Symbols without .AX suffix — used for IBKR conid lookup
-etf_symbols_ibkr <- c("VGS", "VAS", "GOLD")
+etf_symbols_ibkr <- c("VGS", "VVLU")
 
-# Best strategy per ETF (from Monte Carlo backtesting)
+# Best strategy per ETF (from Monte Carlo backtesting, post-2027 regime)
+# VGS:  macd_vol_fixed_20, SL5  — CAPS 0.467, geo_mean_CAGR 8.59%
+# VVLU: rsi, SL10             — CAPS 0.621, geo_mean_CAGR 9.04%
+# Portfolio split optimised at 60/40 VGS/VVLU (CAPS 0.559, CAGR 8.79%)
 etf_strategies <- list(
-  VGS.AX  = list(strategy = "buy_hold",                stop_loss = 0.00),
-  VAS.AX  = list(strategy = "macd_vol_dynamic_10_0.6", stop_loss = 0.10),
-  GOLD.AX = list(strategy = "rsi",                     stop_loss = 0.10)
+  VGS.AX  = list(strategy = "macd_vol_fixed_20", stop_loss = 0.05),
+  VVLU.AX = list(strategy = "rsi",               stop_loss = 0.10)
 )
 
 # Capital configuration --------------------------------------------------------
@@ -49,11 +51,10 @@ etf_strategies <- list(
 # if IBKR cash balance cannot be fetched
 total_capital <- 5000
 
-# Capital split per ETF (CAPS-weighted, Decision 9)
+# Capital split per ETF — 60/40 VGS/VVLU (Decision 10, May 2026)
 etf_splits <- c(
-  VGS.AX  = 0.56,
-  VAS.AX  = 0.30,
-  GOLD.AX = 0.14
+  VGS.AX  = 0.60,
+  VVLU.AX = 0.40
 )
 
 # Capital bucket per ETF (AUD) — each ETF trades only within its own bucket
@@ -84,11 +85,11 @@ price_fetch_log_dir   <- file.path(project_root, "outputs", "live_trading", "log
 
 # Signal parameters ------------------------------------------------------------
 
-# RSI parameters (GOLD.AX)
+# RSI parameters (VVLU.AX)
 rsi_n_period <- 14
 rsi_lower    <- 30
 rsi_upper    <- 70
 
-# MACD-V dynamic parameters (VAS.AX)
-macd_vol_rolling_window <- 10
-macd_vol_quantile       <- 0.6
+# MACD-V fixed parameters (VGS.AX)
+# macd_vol_fixed_20 uses strat_macdv() with strength_threshold = 20
+macd_vol_fixed_threshold <- 20
